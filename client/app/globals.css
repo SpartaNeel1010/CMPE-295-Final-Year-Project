@@ -1286,6 +1286,17 @@ body {
   color: var(--accent);
 }
 
+.auth-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
 .auth-terms {
   margin-top: 1.25rem;
   font-size: 0.78rem;
