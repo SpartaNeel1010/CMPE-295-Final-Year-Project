@@ -35,47 +35,15 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// ── Auth with Clerk ───────────────────────────────────────────────────────────
 
-export type AuthResponse = {
-  token: string;
-  user: {
-    id: string;
-    name: string;
-    email: string;
-    role: string;
-  };
-};
-
-export function login(email: string, password: string): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-}
-
-export function register(
-  name: string,
-  email: string,
-  password: string,
-  role: string
-): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ name, email, password, role }),
-  });
-}
-
-// ── Token helpers ─────────────────────────────────────────────────────────────
-
-export function saveToken(token: string): void {
-  localStorage.setItem("ir_token", token);
-}
-
-export function getToken(): string | null {
-  return localStorage.getItem("ir_token");
-}
-
-export function clearToken(): void {
-  localStorage.removeItem("ir_token");
-}
+// When calling the backend API, be sure to fetch the Clerk session token
+// using `await getToken()` from `@clerk/nextjs` (either inside a hook or server action)
+// and pass it in the `Authorization` header:
+//
+// const token = await getToken();
+// const data = await request<MyData>("/api/my-endpoint", {
+//   headers: {
+//     Authorization: `Bearer ${token}`
+//   }
+// });

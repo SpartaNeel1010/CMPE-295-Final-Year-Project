@@ -1,24 +1,41 @@
-from datetime import datetime, timedelta, timezone
-import bcrypt
-from jose import jwt
-from app.config import JWT_SECRET, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+import os
+from fastapi import Request, HTTPException, status
+from clerk_backend_api import Clerk
+from clerk_backend_api.security import AuthenticateRequestOptions
 
+clerk = Clerk(bearer_auth=os.environ.get("CLERK_SECRET_KEY"))
 
-def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+async def verify_clerk_token(request: Request) -> dict:
+    """
+    Verifies the Clerk JWT token from the Authorization header using the clerk-backend-api SDK.
+    Returns the token payload if valid, otherwise raises a 401 HTTPException.
+    """
+    # Create a request-like object that Clerk SDK expects
+    class Requestish:
+        def __init__(self, req: Request):
+            self.headers = dict(req.headers)
+            self.url = str(req.url)
+            self.method = req.method
 
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
-
-
-def create_access_token(data: dict) -> str:
-    payload = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload["exp"] = expire
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-def decode_access_token(token: str) -> dict:
-    """Raises JWTError if token is invalid or expired."""
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    req_wrapper = Requestish(request)
+    
+    try:
+        # We use the sync or async method. Let's try sync.
+        request_state = clerk.authenticate_request(
+            req_wrapper,
+            AuthenticateRequestOptions()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token verification failed: {str(e)}"
+        )
+        
+    if not request_state.is_signed_in:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token."
+        )
+        
+    # request_state.payload contains the JWT claims
+    return getattr(request_state, "payload", {})
