@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 declare const process: { env: Record<string, string | undefined> };
 const BASE_URL: string =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL) ||
@@ -37,13 +36,21 @@ async function request<T>(
 
 // ── Auth with Clerk ───────────────────────────────────────────────────────────
 
-// When calling the backend API, be sure to fetch the Clerk session token
-// using `await getToken()` from `@clerk/nextjs` (either inside a hook or server action)
-// and pass it in the `Authorization` header:
-//
-// const token = await getToken();
-// const data = await request<MyData>("/api/my-endpoint", {
-//   headers: {
-//     Authorization: `Bearer ${token}`
-//   }
-// });
+/**
+ * Make an authenticated request by injecting the Clerk session token.
+ * Pass `getToken` from `useAuth()` in your component.
+ */
+export async function authedRequest<T>(
+  path: string,
+  getToken: () => Promise<string | null>,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = await getToken();
+  return request<T>(path, {
+    ...options,
+    headers: {
+      ...(options.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+}

@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useAuth } from "@clerk/nextjs";
 import ScheduleNavbar from "@/components/schedule/ScheduleNavbar";
 import { PeerModal, FriendModal } from "@/components/schedule/ScheduleModals";
+import { authedRequest } from "@/lib/api";
 
 // ── Page-level SVG icons ──────────────────────────────────────────────────────
 
@@ -40,7 +42,7 @@ const IcoX = () => (
   </svg>
 );
 
-// ── Sample past/upcoming sessions (mock data) ────────────────────────────────
+// ── Session types ─────────────────────────────────────────────────────────────
 
 type SessionStatus = "Scheduled" | "Completed" | "Cancelled";
 type SessionMode   = "Peer" | "Friend";
@@ -56,11 +58,32 @@ interface Session {
   partner?: string;
 }
 
-const SAMPLE_SESSIONS: Session[] = [
-  { id: 1, date: "Mar 14, 2026", time: "2:30 PM", track: "DSA",        mode: "Peer",   status: "Scheduled",  partner: "Alex K." },
-  { id: 2, date: "Mar 8,  2026", time: "10:00 AM", track: "Behavioral", mode: "Friend", status: "Completed",  partner: "Priya M." },
-  { id: 3, date: "Mar 2,  2026", time: "4:00 PM",  track: "DSA",        mode: "Peer",   status: "Completed",  partner: "Jordan T." },
-];
+interface ApiSession {
+  id: number;
+  track: string;
+  mode: string;
+  status: string;
+  scheduled_date: string;
+  scheduled_time: string;
+  partner_name: string | null;
+}
+
+function mapApiSession(s: ApiSession): Session {
+  const statusMap: Record<string, SessionStatus> = {
+    pending: "Scheduled", matched: "Scheduled", active: "Scheduled",
+    completed: "Completed", cancelled: "Cancelled",
+  };
+  const date = new Date(s.scheduled_date + "T00:00:00");
+  return {
+    id: s.id,
+    date: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    time: s.scheduled_time,
+    track: s.track === "dsa" ? "DSA" : "Behavioral",
+    mode: s.mode === "peer" ? "Peer" : "Friend",
+    status: statusMap[s.status] ?? "Scheduled",
+    partner: s.partner_name ?? undefined,
+  };
+}
 
 // ── Session filter tabs ───────────────────────────────────────────────────────
 
@@ -69,11 +92,41 @@ type FilterTab = "All" | "Upcoming" | "Completed";
 // ── Main client component ─────────────────────────────────────────────────────
 
 export default function SchedulerClient() {
+  const { getToken } = useAuth();
   const [peerOpen,   setPeerOpen]   = useState(false);
   const [friendOpen, setFriendOpen] = useState(false);
   const [filterTab,  setFilterTab]  = useState<FilterTab>("All");
+  const [sessions,   setSessions]   = useState<Session[]>([]);
 
-  const filtered = SAMPLE_SESSIONS.filter(s => {
+  const loadSessions = () => {
+    authedRequest<ApiSession[]>("/api/sessions", getToken)
+      .then(data => setSessions(data.map(mapApiSession)))
+      .catch(() => {/* silently keep empty list */});
+  };
+
+  useEffect(() => { loadSessions(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCancel = (id: number) => {
+    if (!confirm("Cancel this session?")) return;
+    authedRequest(`/api/sessions/${id}`, getToken, { method: "DELETE" })
+      .then(() => setSessions(prev => prev.map(s => s.id === id ? { ...s, status: "Cancelled" as SessionStatus } : s)))
+      .catch(err => alert(`Failed to cancel: ${err.message}`));
+  };
+
+  const handleReschedule = (id: number) => {
+    const date = prompt("New date (YYYY-MM-DD):");
+    if (!date) return;
+    const time = prompt("New time (e.g. 2:30 PM):");
+    if (!time) return;
+    authedRequest(`/api/sessions/${id}/reschedule`, getToken, {
+      method: "PATCH",
+      body: JSON.stringify({ date, time }),
+    })
+      .then(() => loadSessions())
+      .catch(err => alert(`Failed to reschedule: ${err.message}`));
+  };
+
+  const filtered = sessions.filter(s => {
     if (filterTab === "Upcoming")  return s.status === "Scheduled";
     if (filterTab === "Completed") return s.status === "Completed";
     return true;
@@ -231,7 +284,7 @@ export default function SchedulerClient() {
                                 <>
                                   <button
                                     className="session-action-btn"
-                                    onClick={() => alert(`Reschedule session ${s.id}`)}
+                                    onClick={() => handleReschedule(s.id)}
                                     aria-label={`Reschedule session on ${s.date}`}
                                     title="Reschedule"
                                   >
@@ -239,7 +292,7 @@ export default function SchedulerClient() {
                                   </button>
                                   <button
                                     className="session-action-btn danger"
-                                    onClick={() => alert(`Cancel session ${s.id}`)}
+                                    onClick={() => handleCancel(s.id)}
                                     aria-label={`Cancel session on ${s.date}`}
                                     title="Cancel"
                                   >
@@ -290,25 +343,25 @@ export default function SchedulerClient() {
               <div className="sidebar-stat-grid">
                 <div className="sidebar-stat">
                   <div className="sidebar-stat-num">
-                    {SAMPLE_SESSIONS.filter(s => s.status === "Completed").length}
+                    {sessions.filter(s => s.status === "Completed").length}
                   </div>
                   <div className="sidebar-stat-lbl">Completed</div>
                 </div>
                 <div className="sidebar-stat">
                   <div className="sidebar-stat-num">
-                    {SAMPLE_SESSIONS.filter(s => s.status === "Scheduled").length}
+                    {sessions.filter(s => s.status === "Scheduled").length}
                   </div>
                   <div className="sidebar-stat-lbl">Upcoming</div>
                 </div>
                 <div className="sidebar-stat">
                   <div className="sidebar-stat-num">
-                    {SAMPLE_SESSIONS.filter(s => s.track === "DSA").length}
+                    {sessions.filter(s => s.track === "DSA").length}
                   </div>
                   <div className="sidebar-stat-lbl">DSA</div>
                 </div>
                 <div className="sidebar-stat">
                   <div className="sidebar-stat-num">
-                    {SAMPLE_SESSIONS.filter(s => s.track === "Behavioral").length}
+                    {sessions.filter(s => s.track === "Behavioral").length}
                   </div>
                   <div className="sidebar-stat-lbl">Behavioral</div>
                 </div>
@@ -338,8 +391,8 @@ export default function SchedulerClient() {
       </main>
 
       {/* ── Modals ── */}
-      {peerOpen   && <PeerModal   onClose={() => setPeerOpen(false)}   />}
-      {friendOpen && <FriendModal onClose={() => setFriendOpen(false)} />}
+      {peerOpen   && <PeerModal   onClose={() => setPeerOpen(false)}   onSuccess={loadSessions} />}
+      {friendOpen && <FriendModal onClose={() => setFriendOpen(false)} onSuccess={loadSessions} />}
     </div>
   );
 }
