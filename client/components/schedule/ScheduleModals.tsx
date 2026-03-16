@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@clerk/nextjs";
+import { authedRequest } from "@/lib/api";
 
 // ── Inline SVG icons (18×18, stroke, currentColor) ───────────────────────────
 
@@ -68,21 +70,34 @@ const MONTHS = [
 ];
 const DOW = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-// ── Slot data ────────────────────────────────────────────────────────────────
+// ── Slot types & defaults ─────────────────────────────────────────────────────
 
-const ALL_SLOTS: { label: string; period: SlotFilter; available: boolean }[] = [
-  { label: "7:00 AM",  period: "morning",   available: true  },
-  { label: "8:30 AM",  period: "morning",   available: false },
-  { label: "10:00 AM", period: "morning",   available: true  },
-  { label: "11:30 AM", period: "morning",   available: true  },
-  { label: "1:00 PM",  period: "afternoon", available: false },
-  { label: "2:30 PM",  period: "afternoon", available: true  },
-  { label: "4:00 PM",  period: "afternoon", available: true  },
-  { label: "5:30 PM",  period: "afternoon", available: true  },
-  { label: "7:00 PM",  period: "evening",   available: true  },
-  { label: "8:30 PM",  period: "evening",   available: false },
-  { label: "10:00 PM", period: "evening",   available: true  },
-];
+type Slot = { label: string; period: SlotFilter; available: boolean };
+
+// These mirror the backend SLOTS_BY_TRACK constants exactly.
+// All slots start as available; the API overlays real availability on date select.
+const DEFAULT_SLOTS: Record<string, Slot[]> = {
+  dsa: [
+    { label: "9:00 AM",  period: "morning",   available: true },
+    { label: "11:00 AM", period: "morning",   available: true },
+    { label: "1:00 PM",  period: "afternoon", available: true },
+    { label: "3:00 PM",  period: "afternoon", available: true },
+    { label: "5:00 PM",  period: "afternoon", available: true },
+    { label: "7:00 PM",  period: "evening",   available: true },
+    { label: "9:00 PM",  period: "evening",   available: true },
+  ],
+  behavioral: [
+    { label: "9:00 AM",  period: "morning",   available: true },
+    { label: "10:30 AM", period: "morning",   available: true },
+    { label: "12:00 PM", period: "afternoon", available: true },
+    { label: "1:30 PM",  period: "afternoon", available: true },
+    { label: "3:00 PM",  period: "afternoon", available: true },
+    { label: "4:30 PM",  period: "afternoon", available: true },
+    { label: "6:00 PM",  period: "evening",   available: true },
+    { label: "7:30 PM",  period: "evening",   available: true },
+    { label: "9:00 PM",  period: "evening",   available: true },
+  ],
+};
 
 // ── Mini-calendar component ───────────────────────────────────────────────────
 
@@ -96,17 +111,32 @@ function MiniCalendar({
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [viewYear, setViewYear] = useState(today.getFullYear());
-  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  // Allow only current month and next month
+  const curYear  = today.getFullYear();
+  const curMonth = today.getMonth();
+  const nextMonthDate = new Date(curYear, curMonth + 1, 1);
+  const maxYear  = nextMonthDate.getFullYear();
+  const maxMonth = nextMonthDate.getMonth();
+  // Last selectable day = last day of next month
+  const maxDate  = new Date(maxYear, maxMonth + 1, 0);
+  maxDate.setHours(0, 0, 0, 0);
 
-  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+  const [viewYear,  setViewYear]  = useState(curYear);
+  const [viewMonth, setViewMonth] = useState(curMonth);
+
+  const canGoPrev = viewYear > curYear || viewMonth > curMonth;
+  const canGoNext = viewYear < maxYear  || (viewYear === maxYear && viewMonth < maxMonth);
+
+  const firstDay    = new Date(viewYear, viewMonth, 1).getDay();
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
   const prevMonth = () => {
+    if (!canGoPrev) return;
     if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11); }
     else setViewMonth(m => m - 1);
   };
   const nextMonth = () => {
+    if (!canGoNext) return;
     if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0); }
     else setViewMonth(m => m + 1);
   };
@@ -122,7 +152,9 @@ function MiniCalendar({
         <button
           className="calendar-nav-btn"
           onClick={prevMonth}
+          disabled={!canGoPrev}
           aria-label="Previous month"
+          style={{ opacity: canGoPrev ? 1 : 0.25, cursor: canGoPrev ? "pointer" : "default" }}
         >‹</button>
         <span className="calendar-month">
           {MONTHS[viewMonth]} {viewYear}
@@ -130,7 +162,9 @@ function MiniCalendar({
         <button
           className="calendar-nav-btn"
           onClick={nextMonth}
+          disabled={!canGoNext}
           aria-label="Next month"
+          style={{ opacity: canGoNext ? 1 : 0.25, cursor: canGoNext ? "pointer" : "default" }}
         >›</button>
       </div>
       <div className="calendar-grid">
@@ -141,23 +175,25 @@ function MiniCalendar({
           if (day === null) {
             return <div key={`e-${i}`} className="calendar-day empty" />;
           }
-          const date = new Date(viewYear, viewMonth, day);
-          const isPast  = date < today;
-          const isToday = date.getTime() === today.getTime();
-          const isSel   = selected?.getTime() === date.getTime();
+          const date      = new Date(viewYear, viewMonth, day);
+          const isPast    = date < today;
+          const isBeyond  = date > maxDate;
+          const isDisabled = isPast || isBeyond;
+          const isToday   = date.getTime() === today.getTime();
+          const isSel     = selected?.getTime() === date.getTime();
           const cls = [
             "calendar-day",
-            isPast  ? "disabled" : "",
-            isToday ? "today"    : "",
-            isSel   ? "selected" : "",
+            isDisabled ? "disabled" : "",
+            isToday    ? "today"    : "",
+            isSel      ? "selected" : "",
           ].filter(Boolean).join(" ");
 
           return (
             <button
               key={day}
               className={cls}
-              disabled={isPast}
-              onClick={() => !isPast && onSelect(date)}
+              disabled={isDisabled}
+              onClick={() => !isDisabled && onSelect(date)}
               aria-label={`${MONTHS[viewMonth]} ${day}, ${viewYear}${isToday ? " (today)" : ""}`}
               aria-pressed={isSel}
             >
@@ -243,25 +279,36 @@ function OptionTile({
 
 const PEER_STEPS = ["Track", "Type", "Level", "Schedule"];
 
-export function PeerModal({ onClose }: { onClose: () => void }) {
+export function PeerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
+  const { getToken } = useAuth();
   const [step, setStep]         = useState(0);
   const [track, setTrack]       = useState<Track>(null);
   const [difficulty, setDiff]   = useState<Difficulty>(null);
   const [selDate, setSelDate]   = useState<Date | null>(null);
   const [selSlot, setSelSlot]   = useState<string | null>(null);
   const [slotFilter, setSF]     = useState<SlotFilter>("all");
+  const [slots, setSlots]       = useState<Slot[]>([]);
   const [loadingSlots, setLoad] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [done, setDone]         = useState(false);
 
-  // Simulate slot loading when date changes
+  // When date changes on step 3: show default slots immediately, then fetch real availability
   useEffect(() => {
-    if (selDate && step === 3) {
-      setSelSlot(null);
-      setLoad(true);
-      const t = setTimeout(() => setLoad(false), 900);
-      return () => clearTimeout(t);
-    }
-  }, [selDate, step]);
+    if (!selDate || step !== 3 || !track || !difficulty) return;
+    setSelSlot(null);
+    // Show all slots for this track right away (all available by default)
+    const defaults = DEFAULT_SLOTS[track] ?? [];
+    setSlots(defaults);
+    setLoad(true);
+    const dateStr = selDate.toISOString().split("T")[0];
+    authedRequest<Slot[]>(
+      `/api/sessions/available-slots?date=${dateStr}&track=${track}&difficulty=${difficulty}`,
+      getToken,
+    )
+      .then(data => setSlots(data))
+      .catch(() => { /* keep defaults — all slots shown as available */ })
+      .finally(() => setLoad(false));
+  }, [selDate, step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ESC to close
   useEffect(() => {
@@ -276,7 +323,7 @@ export function PeerModal({ onClose }: { onClose: () => void }) {
     return () => document.body.classList.remove("modal-open");
   }, []);
 
-  const filteredSlots = ALL_SLOTS.filter(
+  const filteredSlots = slots.filter(
     s => slotFilter === "all" || s.period === slotFilter
   );
 
@@ -287,7 +334,27 @@ export function PeerModal({ onClose }: { onClose: () => void }) {
     !!(selDate && selSlot),
   ][step];
 
-  const handleConfirm = () => setDone(true);
+  const handleConfirm = async () => {
+    if (!selDate || !selSlot || !track || !difficulty) return;
+    setSubmitting(true);
+    try {
+      await authedRequest("/api/sessions/peer", getToken, {
+        method: "POST",
+        body: JSON.stringify({
+          track,
+          difficulty,
+          date: selDate.toISOString().split("T")[0],
+          time: selSlot,
+        }),
+      });
+      onSuccess?.();
+      setDone(true);
+    } catch (err: unknown) {
+      alert(`Failed to schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const formatDate = (d: Date) =>
     d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
@@ -336,7 +403,7 @@ export function PeerModal({ onClose }: { onClose: () => void }) {
               </button>
               <button
                 className="btn-modal-secondary"
-                onClick={() => { setDone(false); setStep(0); setTrack(null); setDiff(null); setSelDate(null); setSelSlot(null); }}
+                onClick={() => { setDone(false); setStep(0); setTrack(null); setDiff(null); setSelDate(null); setSelSlot(null); setSlots([]); }}
               >
                 Schedule Another
               </button>
@@ -521,10 +588,10 @@ export function PeerModal({ onClose }: { onClose: () => void }) {
           ) : (
             <button
               className="btn-modal-primary"
-              disabled={!canContinue}
+              disabled={!canContinue || submitting}
               onClick={handleConfirm}
             >
-              ✓ Confirm &amp; Schedule
+              {submitting ? "Scheduling…" : "✓ Confirm & Schedule"}
             </button>
           )}
         </div>
@@ -537,22 +604,17 @@ export function PeerModal({ onClose }: { onClose: () => void }) {
 //  FRIEND MODAL
 // ════════════════════════════════════════════════════════════════════════════
 
-const INVITE_LINK_BASE = "https://interviewramp.io/invite/";
-
-function generateInviteLink(track: Track) {
-  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `${INVITE_LINK_BASE}${track ?? "session"}/${code}`;
-}
-
-export function FriendModal({ onClose }: { onClose: () => void }) {
-  const [step, setStep]         = useState(0);
-  const [track, setTrack]       = useState<Track>(null);
-  const [email, setEmail]       = useState("");
-  const [message, setMessage]   = useState("");
-  const [emailErr, setEmailErr] = useState("");
-  const [inviteLink]            = useState(() => generateInviteLink(null));
-  const [copied, setCopied]     = useState(false);
-  const [sent, setSent]         = useState(false);
+export function FriendModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
+  const { getToken } = useAuth();
+  const [step, setStep]           = useState(0);
+  const [track, setTrack]         = useState<Track>(null);
+  const [email, setEmail]         = useState("");
+  const [message, setMessage]     = useState("");
+  const [emailErr, setEmailErr]   = useState("");
+  const [inviteLink, setInviteLink] = useState("");
+  const [copied, setCopied]       = useState(false);
+  const [sending, setSending]     = useState(false);
+  const [sent, setSent]           = useState(false);
 
   // ESC to close
   useEffect(() => {
@@ -573,10 +635,23 @@ export function FriendModal({ onClose }: { onClose: () => void }) {
     return "";
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const err = validateEmail(email);
     if (err) { setEmailErr(err); return; }
-    setSent(true);
+    setSending(true);
+    try {
+      const res = await authedRequest<{ invite_link: string }>("/api/sessions/friend", getToken, {
+        method: "POST",
+        body: JSON.stringify({ track, email, message: message || null }),
+      });
+      setInviteLink(res.invite_link);
+      onSuccess?.();
+      setSent(true);
+    } catch (e: unknown) {
+      alert(`Failed to send invite: ${e instanceof Error ? e.message : "Unknown error"}`);
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleCopy = useCallback(() => {
@@ -631,7 +706,7 @@ export function FriendModal({ onClose }: { onClose: () => void }) {
             <div className="success-actions">
               <button
                 className="btn-modal-primary"
-                onClick={() => { setSent(false); setStep(0); setTrack(null); setEmail(""); setMessage(""); setEmailErr(""); }}
+                onClick={() => { setSent(false); setStep(0); setTrack(null); setEmail(""); setMessage(""); setEmailErr(""); setInviteLink(""); }}
               >
                 Invite Another Friend
               </button>
@@ -726,16 +801,11 @@ export function FriendModal({ onClose }: { onClose: () => void }) {
 
               {/* Invite link preview */}
               <div className="invite-link-preview">
-                <div className="invite-link-label">Preview — invite link</div>
+                <div className="invite-link-label">Invite link — generated on send</div>
                 <div className="invite-link-row">
-                  <span className="invite-link-url">{inviteLink}</span>
-                  <button
-                    className={`invite-copy-btn ${copied ? "copied" : ""}`}
-                    onClick={handleCopy}
-                    aria-label="Copy invite link"
-                  >
-                    {copied ? "✓ Copied" : "Copy Link"}
-                  </button>
+                  <span className="invite-link-url" style={{ color: "var(--muted)", fontStyle: "italic" }}>
+                    Link will appear here after sending
+                  </span>
                 </div>
               </div>
 
@@ -763,8 +833,8 @@ export function FriendModal({ onClose }: { onClose: () => void }) {
               Continue →
             </button>
           ) : (
-            <button className="btn-modal-primary" onClick={handleSend}>
-              Send Invite
+            <button className="btn-modal-primary" onClick={handleSend} disabled={sending}>
+              {sending ? "Sending…" : "Send Invite"}
             </button>
           )}
         </div>

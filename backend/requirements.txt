@@ -4,3 +4,4 @@ psycopg2-binary
 clerk-backend-api
 python-dotenv
 pydantic[email]
+PyJWT[crypto]

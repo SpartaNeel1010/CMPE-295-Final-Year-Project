@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from app.config import PORT, CLIENT_ORIGIN
 from app.database import init_db
 from app.routers import auth
+from app.routers import sessions
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router)
+app.include_router(sessions.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
