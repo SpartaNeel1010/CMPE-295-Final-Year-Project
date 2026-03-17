@@ -5,6 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import ScheduleNavbar from "@/components/schedule/ScheduleNavbar";
 import { PeerModal, FriendModal } from "@/components/schedule/ScheduleModals";
 import { authedRequest } from "@/lib/api";
+import SessionDetailModal from "@/components/schedule/SessionDetailModal";
 
 // ── Page-level SVG icons ──────────────────────────────────────────────────────
 
@@ -93,10 +94,11 @@ type FilterTab = "All" | "Upcoming" | "Completed";
 
 export default function SchedulerClient() {
   const { getToken } = useAuth();
-  const [peerOpen,   setPeerOpen]   = useState(false);
-  const [friendOpen, setFriendOpen] = useState(false);
-  const [filterTab,  setFilterTab]  = useState<FilterTab>("All");
-  const [sessions,   setSessions]   = useState<Session[]>([]);
+  const [peerOpen,      setPeerOpen]      = useState(false);
+  const [friendOpen,    setFriendOpen]    = useState(false);
+  const [filterTab,     setFilterTab]     = useState<FilterTab>("All");
+  const [sessions,      setSessions]      = useState<Session[]>([]);
+  const [viewingId,     setViewingId]     = useState<number | null>(null);
 
   const loadSessions = () => {
     authedRequest<ApiSession[]>("/api/sessions", getToken)
@@ -274,7 +276,7 @@ export default function SchedulerClient() {
                             <div className="session-actions">
                               <button
                                 className="session-action-btn"
-                                onClick={() => alert(`View session ${s.id}`)}
+                                onClick={() => setViewingId(s.id)}
                                 aria-label={`View session on ${s.date}`}
                                 title="View"
                               >
@@ -391,8 +393,11 @@ export default function SchedulerClient() {
       </main>
 
       {/* ── Modals ── */}
-      {peerOpen   && <PeerModal   onClose={() => setPeerOpen(false)}   onSuccess={loadSessions} />}
-      {friendOpen && <FriendModal onClose={() => setFriendOpen(false)} onSuccess={loadSessions} />}
+      {peerOpen    && <PeerModal   onClose={() => setPeerOpen(false)}   onSuccess={loadSessions} />}
+      {friendOpen  && <FriendModal onClose={() => setFriendOpen(false)} onSuccess={loadSessions} />}
+      {viewingId !== null && (
+        <SessionDetailModal sessionId={viewingId} onClose={() => setViewingId(null)} />
+      )}
     </div>
   );
 }

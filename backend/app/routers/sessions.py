@@ -327,7 +327,9 @@ async def get_session(
     get_or_create_user(user_id, jwt_payload=payload)
 
     session = execute(
-        """SELECT s.*, hu.name AS host_name, gu.name AS guest_name
+        """SELECT s.*,
+                  hu.name  AS host_name,  hu.email AS host_email,
+                  gu.name  AS guest_name, gu.email AS guest_email
            FROM sessions s
            LEFT JOIN users hu ON s.host_user_id = hu.id
            LEFT JOIN users gu ON s.guest_user_id = gu.id
@@ -339,7 +341,38 @@ async def get_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return dict(session)
+    result = dict(session)
+
+    # For friend sessions, attach the active invite link (if any)
+    if result.get("mode") == "friend":
+        invite = execute(
+            """SELECT invite_code, invitee_email, status, expires_at
+               FROM friend_invites
+               WHERE session_id = %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (session_id,),
+            fetch="one",
+        )
+        if invite:
+            inv = dict(invite)
+            inv["invite_link"] = f"{CLIENT_ORIGIN}/join/{inv['invite_code']}"
+            result["invite"] = inv
+
+    # Serialize non-JSON-native types
+    for key, val in result.items():
+        if hasattr(val, "isoformat"):
+            result[key] = val.isoformat()
+        elif hasattr(val, "__str__") and type(val).__name__ in ("UUID",):
+            result[key] = str(val)
+
+    if result.get("invite"):
+        for key, val in result["invite"].items():
+            if hasattr(val, "isoformat"):
+                result["invite"][key] = val.isoformat()
+            elif type(val).__name__ in ("UUID",):
+                result["invite"][key] = str(val)
+
+    return result
 
 
 @router.patch("/{session_id}/reschedule")
