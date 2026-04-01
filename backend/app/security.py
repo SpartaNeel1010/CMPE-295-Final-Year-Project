@@ -12,11 +12,14 @@ JWKS keys are cached per issuer for 1 hour to avoid a network call on every requ
 """
 
 import json
+import logging
 import os
 import ssl
 import time
 import urllib.request
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import certifi
 import jwt
@@ -47,27 +50,44 @@ def get_or_create_user(user_id: str, jwt_payload: dict | None = None) -> None:
     # Attempt 1 – Clerk Management API
     try:
         clerk_user = clerk.users.get(user_id=user_id)
+
+        # Name: prefer first+last, then username, then email prefix
         first = clerk_user.first_name or ""
         last  = clerk_user.last_name  or ""
         name  = f"{first} {last}".strip()
-        email = (
-            clerk_user.email_addresses[0].email_address
-            if clerk_user.email_addresses
-            else ""
+
+        # Email: match against primary_email_address_id, not just index 0
+        primary_id = getattr(clerk_user, "primary_email_address_id", None)
+        email_obj = next(
+            (e for e in (clerk_user.email_addresses or []) if e.id == primary_id),
+            (clerk_user.email_addresses or [None])[0] if clerk_user.email_addresses else None,
         )
-    except Exception:
-        pass  # fall through to JWT claims
+        email = email_obj.email_address if email_obj else ""
+
+        # If still no name, try username then derive from email
+        if not name:
+            name = getattr(clerk_user, "username", None) or ""
+        if not name and email:
+            name = email.split("@")[0]
+    except Exception as exc:
+        logger.warning("Clerk Management API call failed for user %s: %s", user_id, exc)
 
     # Attempt 2 – JWT payload claims (present when Clerk JWT templates include them)
-    if not name and jwt_payload:
-        first = jwt_payload.get("first_name", "") or ""
-        last  = jwt_payload.get("last_name",  "") or ""
-        name  = f"{first} {last}".strip()
-        email = email or jwt_payload.get("email", "") or ""
+    # Check name and email independently so a missing email isn't skipped
+    if jwt_payload:
+        if not name:
+            first = jwt_payload.get("first_name", "") or ""
+            last  = jwt_payload.get("last_name",  "") or ""
+            name  = f"{first} {last}".strip() or jwt_payload.get("username", "") or ""
+        if not email:
+            email = jwt_payload.get("email", "") or ""
 
     # Final fallback – placeholder so FK constraint is satisfied
     if not name:
         name = "User"
+    if not email:
+        # Keep the local profile insertable even when Clerk/JWT omit email.
+        email = f"{user_id}@placeholder.local"
 
     execute(
         """INSERT INTO users (id, name, email, role)

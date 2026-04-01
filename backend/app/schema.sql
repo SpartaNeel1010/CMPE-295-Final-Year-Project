@@ -20,9 +20,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   scheduled_time  VARCHAR(10) NOT NULL,
   status          VARCHAR(20) NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'matched', 'active', 'completed', 'cancelled')),
-  session_link    UUID NOT NULL DEFAULT gen_random_uuid(),
-  created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+  session_link         UUID NOT NULL DEFAULT gen_random_uuid(),
+  host_joined_lobby    BOOLEAN NOT NULL DEFAULT FALSE,
+  guest_joined_lobby   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at           TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Add lobby columns to existing sessions tables (safe to re-run)
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_joined_lobby  BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS guest_joined_lobby BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS friend_invites (
   id              SERIAL PRIMARY KEY,

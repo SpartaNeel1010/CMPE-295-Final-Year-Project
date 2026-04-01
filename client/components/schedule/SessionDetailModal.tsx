@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import { authedRequest } from "@/lib/api";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ export default function SessionDetailModal({
   onClose: () => void;
 }) {
   const { getToken } = useAuth();
+  const router = useRouter();
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
@@ -302,6 +304,14 @@ export default function SessionDetailModal({
         {/* Footer */}
         <div className="modal-footer">
           <button className="btn-modal-ghost" onClick={onClose}>Close</button>
+          {session && (session.status === "matched" || session.status === "active") && session.session_link && (
+            <button
+              className="btn-modal-primary"
+              onClick={() => { onClose(); router.push(`/lobby/${session.session_link}`); }}
+            >
+              Join Lobby
+            </button>
+          )}
         </div>
       </div>
     </div>
