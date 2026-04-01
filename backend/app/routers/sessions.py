@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.database import execute
 from app.security import verify_clerk_token, get_or_create_user
 from app.config import CLIENT_ORIGIN
+from app.email_utils import send_friend_invite_email
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 bearer_scheme          = HTTPBearer()
@@ -13,7 +14,7 @@ optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 # DSA: 2-hour blocks, 9 AM–9 PM
 DSA_SLOTS = [
-    "9:00 AM", "11:00 AM", "1:00 PM", "3:00 PM", "5:00 PM", "7:00 PM", "9:00 PM",
+    "2:30 AM","9:00 AM", "11:15 AM", "1:00 PM", "3:00 PM", "5:00 PM", "7:00 PM", "9:00 PM",
 ]
 
 # Behavioral: 90-minute blocks, 9 AM–9 PM
@@ -215,10 +216,23 @@ async def create_friend_session(
     )
 
     invite_code = str(invite["invite_code"])
-    invite_link = f"{CLIENT_ORIGIN}/join/{invite_code}"
+    session_link = str(session["session_link"])
+    invite_link = f"{CLIENT_ORIGIN}/lobby/{session_link}"
+
+    # Send invite email (non-blocking; failures are logged, not raised)
+    inviter = execute("SELECT name FROM users WHERE id = %s", (user_id,), fetch="one")
+    inviter_name = inviter["name"] if inviter else "Your friend"
+    send_friend_invite_email(
+        to_email=body.email,
+        inviter_name=inviter_name,
+        track=body.track,
+        lobby_link=invite_link,
+        message=body.message,
+    )
 
     return {
         "session_id": session["id"],
+        "session_link": session_link,
         "invite_code": invite_code,
         "invite_link": invite_link,
     }
@@ -280,6 +294,136 @@ async def accept_invite(
     )
 
     return {"message": "Invite accepted", "session_id": invite["session_id"]}
+
+
+# ── Lobby endpoints ────────────────────────────────────────────────────────────
+
+@router.post("/link/{session_link}/join-lobby", status_code=200)
+async def join_lobby(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+    get_or_create_user(user_id, jwt_payload=payload)
+
+    session = execute(
+        """SELECT * FROM sessions
+           WHERE session_link = %s AND (host_user_id = %s OR guest_user_id = %s)""",
+        (session_link, user_id, user_id),
+        fetch="one",
+    )
+
+    if not session:
+        # User is not a participant yet — check for a pending invite to auto-accept
+        session_base = execute(
+            "SELECT * FROM sessions WHERE session_link = %s",
+            (session_link,),
+            fetch="one",
+        )
+        if not session_base:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        invite = execute(
+            """SELECT * FROM friend_invites
+               WHERE session_id = %s AND status = 'pending'
+               LIMIT 1""",
+            (session_base["id"],),
+            fetch="one",
+        )
+        if not invite or invite["expires_at"] < datetime.now():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Auto-accept the invite and add user as guest
+        execute(
+            "UPDATE sessions SET guest_user_id = %s, status = 'matched' WHERE id = %s",
+            (user_id, session_base["id"]),
+        )
+        execute(
+            "UPDATE friend_invites SET status = 'accepted' WHERE id = %s",
+            (invite["id"],),
+        )
+        session = execute(
+            "SELECT * FROM sessions WHERE session_link = %s",
+            (session_link,),
+            fetch="one",
+        )
+
+    if session["status"] not in ("pending", "matched", "active"):
+        raise HTTPException(status_code=400, detail="Session is not ready to join")
+
+    if session["host_user_id"] == user_id:
+        execute(
+            "UPDATE sessions SET host_joined_lobby = TRUE WHERE session_link = %s",
+            (session_link,),
+        )
+    else:
+        execute(
+            "UPDATE sessions SET guest_joined_lobby = TRUE WHERE session_link = %s",
+            (session_link,),
+        )
+
+    updated = execute(
+        "SELECT host_joined_lobby, guest_joined_lobby FROM sessions WHERE session_link = %s",
+        (session_link,),
+        fetch="one",
+    )
+
+    if updated["host_joined_lobby"] and updated["guest_joined_lobby"]:
+        execute(
+            "UPDATE sessions SET status = 'active' WHERE session_link = %s",
+            (session_link,),
+        )
+
+    return {"message": "Joined lobby"}
+
+
+@router.get("/link/{session_link}/lobby-status")
+async def get_lobby_status(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+    get_or_create_user(user_id, jwt_payload=payload)
+
+    session = execute(
+        """SELECT s.*,
+                  hu.name AS host_name,
+                  gu.name AS guest_name
+           FROM sessions s
+           LEFT JOIN users hu ON s.host_user_id = hu.id
+           LEFT JOIN users gu ON s.guest_user_id = gu.id
+           WHERE s.session_link = %s AND (s.host_user_id = %s OR s.guest_user_id = %s)""",
+        (session_link, user_id, user_id),
+        fetch="one",
+    )
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = dict(session)
+    for key, val in result.items():
+        if hasattr(val, "isoformat"):
+            result[key] = val.isoformat()
+        elif type(val).__name__ == "UUID":
+            result[key] = str(val)
+
+    return {
+        "session_link": result["session_link"],
+        "status": result["status"],
+        "host_name": result.get("host_name"),
+        "guest_name": result.get("guest_name"),
+        "host_joined": result.get("host_joined_lobby", False),
+        "guest_joined": result.get("guest_joined_lobby", False),
+        "both_joined": result.get("host_joined_lobby", False) and result.get("guest_joined_lobby", False),
+        "scheduled_date": result["scheduled_date"],
+        "scheduled_time": result["scheduled_time"],
+        "track": result["track"],
+        "is_host": session["host_user_id"] == user_id,
+    }
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────────
@@ -355,7 +499,7 @@ async def get_session(
         )
         if invite:
             inv = dict(invite)
-            inv["invite_link"] = f"{CLIENT_ORIGIN}/join/{inv['invite_code']}"
+            inv["invite_link"] = f"{CLIENT_ORIGIN}/lobby/{str(result['session_link'])}"
             result["invite"] = inv
 
     # Serialize non-JSON-native types

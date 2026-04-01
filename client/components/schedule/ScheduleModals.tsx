@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import { authedRequest } from "@/lib/api";
 
 // ── Inline SVG icons (18×18, stroke, currentColor) ───────────────────────────
@@ -395,7 +396,27 @@ export function PeerModal({ onClose, onSuccess }: { onClose: () => void; onSucce
               ))}
             </div>
             <div className="success-actions">
-              <button className="btn-modal-primary" onClick={() => alert("ICS download coming soon!")}>
+              <button className="btn-modal-primary" onClick={() => {
+                if (!selDate || !selSlot || !track) return;
+                const [timePart, ampm] = selSlot.split(" ");
+                const [hStr, mStr] = timePart.split(":");
+                let hour = parseInt(hStr, 10);
+                const min = parseInt(mStr, 10);
+                if (ampm === "PM" && hour !== 12) hour += 12;
+                if (ampm === "AM" && hour === 12) hour = 0;
+                const start = new Date(selDate);
+                start.setHours(hour, min, 0, 0);
+                const durationMin = track === "dsa" ? 120 : 90;
+                const end = new Date(start.getTime() + durationMin * 60 * 1000);
+                const pad = (n: number) => String(n).padStart(2, "0");
+                const fmt = (d: Date) =>
+                  `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+                const trackLabel = track === "dsa" ? "DSA" : "Behavioral";
+                const title = encodeURIComponent(`Mock Interview – ${trackLabel} (InterviewRamp)`);
+                const details = encodeURIComponent("Practice session scheduled via InterviewRamp.");
+                const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(start)}/${fmt(end)}&details=${details}`;
+                window.open(url, "_blank", "noopener,noreferrer");
+              }}>
                 <IconCalendar /> Add to Calendar
               </button>
               <button className="btn-modal-ghost" onClick={onClose}>
@@ -606,12 +627,14 @@ export function PeerModal({ onClose, onSuccess }: { onClose: () => void; onSucce
 
 export function FriendModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
   const { getToken } = useAuth();
+  const router = useRouter();
   const [step, setStep]           = useState(0);
   const [track, setTrack]         = useState<Track>(null);
   const [email, setEmail]         = useState("");
   const [message, setMessage]     = useState("");
   const [emailErr, setEmailErr]   = useState("");
   const [inviteLink, setInviteLink] = useState("");
+  const [sessionLink, setSessionLink] = useState("");
   const [copied, setCopied]       = useState(false);
   const [sending, setSending]     = useState(false);
   const [sent, setSent]           = useState(false);
@@ -640,11 +663,12 @@ export function FriendModal({ onClose, onSuccess }: { onClose: () => void; onSuc
     if (err) { setEmailErr(err); return; }
     setSending(true);
     try {
-      const res = await authedRequest<{ invite_link: string }>("/api/sessions/friend", getToken, {
+      const res = await authedRequest<{ invite_link: string; session_link: string }>("/api/sessions/friend", getToken, {
         method: "POST",
         body: JSON.stringify({ track, email, message: message || null }),
       });
       setInviteLink(res.invite_link);
+      setSessionLink(res.session_link);
       onSuccess?.();
       setSent(true);
     } catch (e: unknown) {
@@ -706,7 +730,13 @@ export function FriendModal({ onClose, onSuccess }: { onClose: () => void; onSuc
             <div className="success-actions">
               <button
                 className="btn-modal-primary"
-                onClick={() => { setSent(false); setStep(0); setTrack(null); setEmail(""); setMessage(""); setEmailErr(""); setInviteLink(""); }}
+                onClick={() => { onClose(); router.push(`/lobby/${sessionLink}`); }}
+              >
+                Join Lobby
+              </button>
+              <button
+                className="btn-modal-secondary"
+                onClick={() => { setSent(false); setStep(0); setTrack(null); setEmail(""); setMessage(""); setEmailErr(""); setInviteLink(""); setSessionLink(""); }}
               >
                 Invite Another Friend
               </button>

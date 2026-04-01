@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import ScheduleNavbar from "@/components/schedule/ScheduleNavbar";
 import { PeerModal, FriendModal } from "@/components/schedule/ScheduleModals";
 import { authedRequest } from "@/lib/api";
@@ -26,6 +27,12 @@ const IcoGlobe = () => (
     <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
   </svg>
 );
+const IcoJoin = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polygon points="5 3 19 12 5 21 5 3"/>
+  </svg>
+);
+
 // Action button icons
 const IcoEye = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -56,6 +63,10 @@ interface Session {
   track: SessionTrack;
   mode: SessionMode;
   status: SessionStatus;
+  rawStatus: string;
+  sessionLink: string;
+  scheduledDateRaw: string;
+  scheduledTimeRaw: string;
   partner?: string;
 }
 
@@ -66,8 +77,22 @@ interface ApiSession {
   status: string;
   scheduled_date: string;
   scheduled_time: string;
+  session_link: string;
   partner_name: string | null;
 }
+
+function parseSessionDateTime(date: string, time: string): Date {
+  // date: "2026-03-31", time: "11:00 AM"
+  const [timePart, ampm] = time.split(" ");
+  const [hourStr, minStr] = timePart.split(":");
+  let hour = parseInt(hourStr, 10);
+  const min = parseInt(minStr, 10);
+  if (ampm === "PM" && hour !== 12) hour += 12;
+  if (ampm === "AM" && hour === 12) hour = 0;
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year, month - 1, day, hour, min, 0);
+}
+
 
 function mapApiSession(s: ApiSession): Session {
   const statusMap: Record<string, SessionStatus> = {
@@ -82,6 +107,10 @@ function mapApiSession(s: ApiSession): Session {
     track: s.track === "dsa" ? "DSA" : "Behavioral",
     mode: s.mode === "peer" ? "Peer" : "Friend",
     status: statusMap[s.status] ?? "Scheduled",
+    rawStatus: s.status,
+    sessionLink: s.session_link,
+    scheduledDateRaw: s.scheduled_date,
+    scheduledTimeRaw: s.scheduled_time,
     partner: s.partner_name ?? undefined,
   };
 }
@@ -94,11 +123,19 @@ type FilterTab = "All" | "Upcoming" | "Completed";
 
 export default function SchedulerClient() {
   const { getToken } = useAuth();
+  const router = useRouter();
   const [peerOpen,      setPeerOpen]      = useState(false);
   const [friendOpen,    setFriendOpen]    = useState(false);
   const [filterTab,     setFilterTab]     = useState<FilterTab>("All");
   const [sessions,      setSessions]      = useState<Session[]>([]);
   const [viewingId,     setViewingId]     = useState<number | null>(null);
+  const [now,           setNow]           = useState(() => new Date());
+
+  // Tick every 30s so join-window badge refreshes without full reload
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const loadSessions = () => {
     authedRequest<ApiSession[]>("/api/sessions", getToken)
@@ -248,7 +285,12 @@ export default function SchedulerClient() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filtered.map(s => (
+                      {filtered.map(s => {
+                        const isExpired = s.rawStatus === "matched" &&
+                          now > new Date(parseSessionDateTime(s.scheduledDateRaw, s.scheduledTimeRaw).getTime() + 10 * 60 * 1000);
+                        const canJoin  = (s.rawStatus === "matched" || s.rawStatus === "active") && !isExpired;
+
+                        return (
                         <tr key={s.id}>
                           <td>
                             <div style={{ fontWeight: 600, fontSize: "0.86rem" }}>{s.date}</div>
@@ -268,9 +310,15 @@ export default function SchedulerClient() {
                             {s.partner ?? "—"}
                           </td>
                           <td>
-                            <span className={`session-badge ${s.status.toLowerCase()}`}>
-                              {s.status}
-                            </span>
+                            {isExpired ? (
+                              <span className="session-badge cancelled">Expired</span>
+                            ) : s.rawStatus === "matched" ? (
+                              <span className="session-badge" style={{ background: "#0d2b1e", color: "#4ade80", border: "1px solid #166534" }}>Matched</span>
+                            ) : (
+                              <span className={`session-badge ${s.status.toLowerCase()}`}>
+                                {s.status}
+                              </span>
+                            )}
                           </td>
                           <td>
                             <div className="session-actions">
@@ -282,7 +330,18 @@ export default function SchedulerClient() {
                               >
                                 <IcoEye /> View
                               </button>
-                              {s.status === "Scheduled" && (
+                              {canJoin && (
+                                <button
+                                  className="session-action-btn"
+                                  style={{ background: "#1a3a2a", color: "#4ade80", border: "1px solid #166534", fontWeight: 700 }}
+                                  onClick={() => router.push(`/lobby/${s.sessionLink}`)}
+                                  aria-label={`Join session on ${s.date}`}
+                                  title="Join"
+                                >
+                                  <IcoJoin /> Join
+                                </button>
+                              )}
+                              {s.status === "Scheduled" && !canJoin && !isExpired && (
                                 <>
                                   <button
                                     className="session-action-btn"
@@ -305,7 +364,8 @@ export default function SchedulerClient() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
