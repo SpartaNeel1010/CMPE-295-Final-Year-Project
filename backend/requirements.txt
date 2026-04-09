@@ -5,3 +5,4 @@ clerk-backend-api
 python-dotenv
 pydantic[email]
 PyJWT[crypto]
+pymongo

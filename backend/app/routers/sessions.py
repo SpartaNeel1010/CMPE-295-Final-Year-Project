@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -7,6 +7,8 @@ from app.database import execute
 from app.security import verify_clerk_token, get_or_create_user
 from app.config import CLIENT_ORIGIN
 from app.email_utils import send_friend_invite_email
+from app.mongo import questions_col
+import random as _random
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 bearer_scheme          = HTTPBearer()
@@ -22,6 +24,16 @@ BEHAVIORAL_SLOTS = [
     "9:00 AM", "10:30 AM", "12:00 PM", "1:30 PM",
     "3:00 PM", "4:30 PM", "6:00 PM", "7:30 PM", "9:00 PM",
 ]
+
+def _parse_session_dt(scheduled_date, scheduled_time_str: str) -> datetime:
+    """Combine a date (object or 'YYYY-MM-DD' str) with a '9:00 AM' time string."""
+    if isinstance(scheduled_date, str):
+        d = datetime.strptime(scheduled_date, "%Y-%m-%d").date()
+    else:
+        d = scheduled_date
+    t = datetime.strptime(scheduled_time_str.strip(), "%I:%M %p").time()
+    return datetime.combine(d, t)
+
 
 SLOTS_BY_TRACK: dict[str, list[str]] = {
     "dsa": DSA_SLOTS,
@@ -57,6 +69,12 @@ class FriendSessionRequest(BaseModel):
 class RescheduleRequest(BaseModel):
     date: str
     time: str
+
+
+class SaveCodeRequest(BaseModel):
+    round: int   # 1 or 2
+    code: str
+    lang: str
 
 
 # ── Peer endpoints ─────────────────────────────────────────────────────────────
@@ -372,7 +390,10 @@ async def join_lobby(
 
     if updated["host_joined_lobby"] and updated["guest_joined_lobby"]:
         execute(
-            "UPDATE sessions SET status = 'active' WHERE session_link = %s",
+            """UPDATE sessions
+               SET status = 'active',
+                   started_at = COALESCE(started_at, NOW())
+               WHERE session_link = %s""",
             (session_link,),
         )
 
@@ -411,6 +432,46 @@ async def get_lobby_status(
         elif type(val).__name__ == "UUID":
             result[key] = str(val)
 
+    # ── Assign questions once, atomically ────────────────────────────────────
+    if not result.get("question1_slug"):
+        diff_map = {"beginner": "easy", "intermediate": "medium", "advanced": "hard"}
+        # Default to 'intermediate' for friend sessions that have no difficulty set
+        difficulty = result.get("difficulty") or "intermediate"
+        mongo_diff = diff_map.get(difficulty, "medium")
+        pool = list(questions_col.find({"difficulty": mongo_diff}, {"_id": 0}))
+        if len(pool) >= 2:
+            pair = _random.sample(pool, 2)
+            # Only write if still NULL (concurrent-safe: last writer's values win but
+            # both writes produce valid assignments)
+            assigned = execute(
+                """UPDATE sessions
+                   SET question1_slug = %s, question2_slug = %s
+                   WHERE session_link = %s AND question1_slug IS NULL
+                   RETURNING question1_slug, question2_slug""",
+                (pair[0]["slug"], pair[1]["slug"], result["session_link"]),
+                fetch="one",
+            )
+            if assigned:
+                result["question1_slug"] = assigned["question1_slug"]
+                result["question2_slug"] = assigned["question2_slug"]
+            else:
+                # Another request already assigned — re-fetch
+                fresh = execute(
+                    "SELECT question1_slug, question2_slug FROM sessions WHERE session_link = %s",
+                    (result["session_link"],),
+                    fetch="one",
+                )
+                if fresh:
+                    result["question1_slug"] = fresh["question1_slug"]
+                    result["question2_slug"] = fresh["question2_slug"]
+
+    # ── Load full question documents from MongoDB ─────────────────────────────
+    q1 = q2 = None
+    if result.get("question1_slug"):
+        q1 = questions_col.find_one({"slug": result["question1_slug"]}, {"_id": 0})
+    if result.get("question2_slug"):
+        q2 = questions_col.find_one({"slug": result["question2_slug"]}, {"_id": 0})
+
     return {
         "session_link": result["session_link"],
         "status": result["status"],
@@ -422,8 +483,74 @@ async def get_lobby_status(
         "scheduled_date": result["scheduled_date"],
         "scheduled_time": result["scheduled_time"],
         "track": result["track"],
+        "difficulty": result["difficulty"],
         "is_host": session["host_user_id"] == user_id,
+        "question1": q1,
+        "question2": q2,
+        "code_round1": result.get("code_round1"),
+        "code_round2": result.get("code_round2"),
+        "lang_round1": result.get("lang_round1", "python"),
+        "lang_round2": result.get("lang_round2", "python"),
+        "started_at": result.get("started_at"),
     }
+
+
+@router.patch("/link/{session_link}/save-code", status_code=200)
+async def save_code(
+    session_link: str,
+    body: SaveCodeRequest,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+
+    if body.round not in (1, 2):
+        raise HTTPException(status_code=400, detail="round must be 1 or 2")
+
+    session = execute(
+        "SELECT id, host_user_id, guest_user_id FROM sessions WHERE session_link = %s",
+        (session_link,),
+        fetch="one",
+    )
+    if not session or user_id not in (session["host_user_id"], session["guest_user_id"]):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    col_code = f"code_round{body.round}"
+    col_lang = f"lang_round{body.round}"
+    execute(
+        f"UPDATE sessions SET {col_code} = %s, {col_lang} = %s WHERE session_link = %s",
+        (body.code, body.lang, session_link),
+    )
+    return {"saved": True}
+
+
+# ── Complete endpoint ──────────────────────────────────────────────────────────
+
+@router.post("/link/{session_link}/complete", status_code=200)
+async def complete_session(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+
+    session = execute(
+        "SELECT id, status FROM sessions WHERE session_link = %s AND (host_user_id = %s OR guest_user_id = %s)",
+        (session_link, user_id, user_id),
+        fetch="one",
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["status"] in ("completed", "cancelled", "expired"):
+        return {"message": "Session already finalized"}
+
+    execute(
+        "UPDATE sessions SET status = 'completed' WHERE session_link = %s",
+        (session_link,),
+    )
+    return {"message": "Session marked as completed"}
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────────
@@ -438,11 +565,28 @@ async def list_sessions(
     user_id = payload.get("sub")
     get_or_create_user(user_id, jwt_payload=payload)
 
+    # Auto-expire sessions whose scheduled time has passed (30-min grace window)
+    overdue = execute(
+        """SELECT id, scheduled_date, scheduled_time FROM sessions
+           WHERE (host_user_id = %s OR guest_user_id = %s)
+             AND status IN ('pending', 'matched')""",
+        (user_id, user_id),
+        fetch="all",
+    )
+    now_dt = datetime.now()
+    for s in (overdue or []):
+        try:
+            sdt = _parse_session_dt(s["scheduled_date"], s["scheduled_time"])
+            if now_dt > sdt + timedelta(minutes=30):
+                execute("UPDATE sessions SET status = 'expired' WHERE id = %s", (s["id"],))
+        except Exception:
+            pass
+
     status_filter = ""
     if status == "upcoming":
         status_filter = "AND s.status IN ('pending', 'matched', 'active')"
     elif status == "completed":
-        status_filter = "AND s.status IN ('completed', 'cancelled')"
+        status_filter = "AND s.status IN ('completed', 'cancelled', 'expired')"
 
     sessions = execute(
         f"""SELECT s.*,

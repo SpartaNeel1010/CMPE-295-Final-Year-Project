@@ -30,6 +30,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_joined_lobby  BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS guest_joined_lobby BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Update status constraint to include 'expired' (safe to re-run)
+DO $$
+BEGIN
+  ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check;
+  ALTER TABLE sessions ADD CONSTRAINT sessions_status_check
+    CHECK (status IN ('pending', 'matched', 'active', 'completed', 'cancelled', 'expired'));
+EXCEPTION WHEN others THEN NULL;
+END$$;
+
+-- Pre-assigned questions and persisted code per round (safe to re-run)
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS question1_slug TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS question2_slug TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS code_round1   TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS code_round2   TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lang_round1   TEXT NOT NULL DEFAULT 'python';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lang_round2   TEXT NOT NULL DEFAULT 'python';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS started_at    TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS friend_invites (
   id              SERIAL PRIMARY KEY,
   session_id      INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
