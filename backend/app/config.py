@@ -16,3 +16,6 @@ SMTP_PORT: int     = int(os.environ.get("SMTP_PORT", 587))
 SMTP_USER: str     = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD: str = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM: str     = os.environ.get("SMTP_FROM", "")
+
+# ── MongoDB ────────────────────────────────────────────────────────────────────
+MONGO_URI: str = os.environ.get("MONGO_URI", "mongodb://localhost:27017")

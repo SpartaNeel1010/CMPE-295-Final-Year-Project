@@ -5,6 +5,8 @@ from app.config import PORT, CLIENT_ORIGIN
 from app.database import init_db
 from app.routers import auth
 from app.routers import sessions
+from app.routers import questions
+from app import ws
 
 
 @asynccontextmanager
@@ -24,7 +26,7 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[CLIENT_ORIGIN],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,6 +35,8 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router)
 app.include_router(sessions.router)
+app.include_router(questions.router)
+app.include_router(ws.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

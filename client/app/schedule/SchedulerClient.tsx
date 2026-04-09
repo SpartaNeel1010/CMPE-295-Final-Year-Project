@@ -97,7 +97,7 @@ function parseSessionDateTime(date: string, time: string): Date {
 function mapApiSession(s: ApiSession): Session {
   const statusMap: Record<string, SessionStatus> = {
     pending: "Scheduled", matched: "Scheduled", active: "Scheduled",
-    completed: "Completed", cancelled: "Cancelled",
+    completed: "Completed", cancelled: "Cancelled", expired: "Cancelled",
   };
   const date = new Date(s.scheduled_date + "T00:00:00");
   return {
@@ -166,8 +166,8 @@ export default function SchedulerClient() {
   };
 
   const filtered = sessions.filter(s => {
-    if (filterTab === "Upcoming")  return s.status === "Scheduled";
-    if (filterTab === "Completed") return s.status === "Completed";
+    if (filterTab === "Upcoming")  return s.status === "Scheduled" && s.rawStatus !== "expired";
+    if (filterTab === "Completed") return s.status === "Completed" || s.rawStatus === "expired";
     return true;
   });
 
@@ -286,8 +286,10 @@ export default function SchedulerClient() {
                     </thead>
                     <tbody>
                       {filtered.map(s => {
-                        const isExpired = s.rawStatus === "matched" &&
-                          now > new Date(parseSessionDateTime(s.scheduledDateRaw, s.scheduledTimeRaw).getTime() + 10 * 60 * 1000);
+                        const isExpired = s.rawStatus === "expired" || (
+                          (s.rawStatus === "pending" || s.rawStatus === "matched") &&
+                          now > new Date(parseSessionDateTime(s.scheduledDateRaw, s.scheduledTimeRaw).getTime() + 30 * 60 * 1000)
+                        );
                         const canJoin  = (s.rawStatus === "matched" || s.rawStatus === "active") && !isExpired;
 
                         return (
@@ -312,6 +314,8 @@ export default function SchedulerClient() {
                           <td>
                             {isExpired ? (
                               <span className="session-badge cancelled">Expired</span>
+                            ) : s.rawStatus === "completed" ? (
+                              <span className="session-badge completed">Completed</span>
                             ) : s.rawStatus === "matched" ? (
                               <span className="session-badge" style={{ background: "#0d2b1e", color: "#4ade80", border: "1px solid #166534" }}>Matched</span>
                             ) : (
