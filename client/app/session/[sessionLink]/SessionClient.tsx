@@ -5,6 +5,14 @@ import { useAuth } from "@clerk/nextjs";
 import { authedRequest } from "@/lib/api";
 import Link from "next/link";
 import Editor from "@monaco-editor/react";
+import {
+  LiveKitRoom,
+  useLocalParticipant,
+  useRemoteParticipants,
+  VideoTrack,
+  RoomAudioRenderer,
+} from "@livekit/components-react";
+import { Track } from "livekit-client";
 
 // ── Session data from lobby-status ───────────────────────────────────────────
 
@@ -186,63 +194,230 @@ func twoSum(nums []int, target int) []int {
 
 // ── Video tile ────────────────────────────────────────────────────────────────
 
-function VideoTile({ name, role, isLive }: { name: string; role: string; isLive?: boolean }) {
+const TILE_STYLE: React.CSSProperties = {
+  flex: 1, position: "relative", background: "#0c0e15",
+  border: "1px solid var(--border)", borderRadius: "12px", overflow: "hidden",
+  minHeight: 0,
+};
+
+const NAME_LABEL_STYLE: React.CSSProperties = {
+  position: "absolute", bottom: 10, left: 10,
+  background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)",
+  color: "#fff", fontSize: "0.74rem", fontWeight: 600,
+  padding: "3px 10px", borderRadius: "20px",
+  border: "1px solid rgba(255,255,255,0.08)",
+};
+
+function VideoAvatar({ name }: { name: string }) {
   return (
-    <div style={{
-      flex: 1, position: "relative", background: "#0c0e15",
-      border: "1px solid var(--border)", borderRadius: "12px", overflow: "hidden",
-      minHeight: 0,
-    }}>
-      {/* Camera placeholder */}
-      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{
-          width: 52, height: 52, borderRadius: "50%",
-          background: "var(--card)", border: "1px solid var(--border)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "1.3rem", fontWeight: 800, color: "var(--muted)",
-        }}>
-          {name.charAt(0).toUpperCase()}
+    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{
+        width: 52, height: 52, borderRadius: "50%",
+        background: "var(--card)", border: "1px solid var(--border)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: "1.3rem", fontWeight: 800, color: "var(--muted)",
+      }}>
+        {name.charAt(0).toUpperCase()}
+      </div>
+    </div>
+  );
+}
+
+// Rendered inside <LiveKitRoom> — has access to LiveKit hooks
+function VideoTiles({
+  myName, theirName, myRole, theirRole, mediaAllowed,
+}: { myName: string; theirName: string; myRole: string; theirRole: string; mediaAllowed: boolean }) {
+  const { localParticipant, isCameraEnabled, isMicrophoneEnabled } = useLocalParticipant();
+  const remoteParticipants = useRemoteParticipants();
+  const remote = remoteParticipants[0] ?? null;
+
+  const localCamPub  = localParticipant?.getTrackPublication(Track.Source.Camera);
+  const remoteCamPub = remote?.getTrackPublication(Track.Source.Camera);
+  const hasLocalVideo  = isCameraEnabled  && !!localCamPub?.track  && !localCamPub.isMuted;
+  const hasRemoteVideo = !!remoteCamPub?.track && !remoteCamPub.isMuted;
+
+  const toggleMic = async () => {
+    if (!mediaAllowed) return;
+    try { await localParticipant?.setMicrophoneEnabled(!isMicrophoneEnabled); }
+    catch (e) { console.warn("Mic toggle failed:", e); }
+  };
+  const toggleCam = async () => {
+    if (!mediaAllowed) return;
+    try { await localParticipant?.setCameraEnabled(!isCameraEnabled); }
+    catch (e) { console.warn("Camera toggle failed:", e); }
+  };
+
+  return (
+    <>
+      {/* ── Local tile ── */}
+      <div style={TILE_STYLE}>
+        {hasLocalVideo && localCamPub ? (
+          <div style={{ position: "absolute", inset: 0 }}>
+            <VideoTrack
+              trackRef={{ participant: localParticipant, publication: localCamPub, source: Track.Source.Camera }}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </div>
+        ) : (
+          <VideoAvatar name={myName} />
+        )}
+
+        {/* LIVE badge */}
+        <div style={{ position: "absolute", top: 10, left: 10, background: "#dc2626", color: "#fff", fontSize: "0.62rem", fontWeight: 800, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: "4px" }}>
+          LIVE
+        </div>
+
+        <div style={NAME_LABEL_STYLE}>{myRole} – {myName}</div>
+
+        {/* Mic + cam toggles */}
+        <div style={{ position: "absolute", bottom: 10, right: 10, display: "flex", gap: "0.4rem" }}>
+          <button
+            onClick={toggleMic}
+            title={!mediaAllowed ? "Requires HTTPS" : isMicrophoneEnabled ? "Mute mic" : "Unmute mic"}
+            disabled={!mediaAllowed}
+            style={{ width: 26, height: 26, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.15)", cursor: mediaAllowed ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", background: !isMicrophoneEnabled ? "#7f1d1d" : "rgba(0,0,0,0.5)", color: !isMicrophoneEnabled ? "#fca5a5" : "var(--muted)", opacity: mediaAllowed ? 1 : 0.5 }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isMicrophoneEnabled
+                ? <><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></>
+                : <><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></>
+              }
+            </svg>
+          </button>
+          <button
+            onClick={toggleCam}
+            title={!mediaAllowed ? "Requires HTTPS" : isCameraEnabled ? "Turn off camera" : "Turn on camera"}
+            disabled={!mediaAllowed}
+            style={{ width: 26, height: 26, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.15)", cursor: mediaAllowed ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", background: !isCameraEnabled ? "#7f1d1d" : "rgba(0,0,0,0.5)", color: !isCameraEnabled ? "#fca5a5" : "var(--muted)", opacity: mediaAllowed ? 1 : 0.5 }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isCameraEnabled
+                ? <><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></>
+                : <><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h1a2 2 0 0 1 2 2v9.34"/><path d="M23 7L16 12l7 5V7z"/></>
+              }
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* LIVE badge */}
+      {/* ── Remote tile ── */}
+      <div style={TILE_STYLE}>
+        {hasRemoteVideo && remoteCamPub && remote ? (
+          <div style={{ position: "absolute", inset: 0 }}>
+            <VideoTrack
+              trackRef={{ participant: remote, publication: remoteCamPub, source: Track.Source.Camera }}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </div>
+        ) : (
+          <VideoAvatar name={theirName} />
+        )}
+
+        <div style={NAME_LABEL_STYLE}>{theirRole} – {theirName}</div>
+
+        {!remote && (
+          <div style={{ position: "absolute", top: 10, right: 10, fontSize: "0.68rem", color: "var(--muted)", background: "rgba(0,0,0,0.5)", padding: "2px 8px", borderRadius: "4px" }}>
+            Waiting…
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// Fetches LiveKit token and manages the LiveKitRoom connection
+function VideoConferenceRow({
+  sessionLink, myName, theirName, myRole, theirRole, getToken,
+}: {
+  sessionLink: string;
+  myName: string; theirName: string;
+  myRole: string; theirRole: string;
+  getToken: () => Promise<string | null>;
+}) {
+  const [livekitToken, setLivekitToken] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+
+  useEffect(() => {
+    let active = true;
+    authedRequest<{ token: string; url: string }>(
+      `/api/sessions/link/${sessionLink}/livekit-token`,
+      getTokenRef.current,
+    )
+      .then(data => { if (active) setLivekitToken(data.token); })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [sessionLink]);
+
+  const lkUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "";
+  // navigator.mediaDevices is only available in secure contexts (HTTPS or localhost)
+  const mediaAllowed = typeof window !== "undefined" && !!navigator.mediaDevices;
+  const rowStyle: React.CSSProperties = {
+    flexShrink: 0, height: 154, display: "flex", gap: "0.75rem",
+    padding: "0.6rem 0.75rem", borderBottom: "1px solid var(--border)",
+    background: "#0a0c11",
+  };
+
+  // Fallback: show avatar tiles if LiveKit is not configured or token failed
+  if (failed || !lkUrl || lkUrl.startsWith("wss://your-project")) {
+    return (
+      <div style={rowStyle}>
+        <FallbackVideoTile name={myName}    role={myRole}    isLive />
+        <FallbackVideoTile name={theirName} role={theirRole} />
+      </div>
+    );
+  }
+
+  if (!livekitToken) {
+    // Loading — show avatars while waiting for token
+    return (
+      <div style={rowStyle}>
+        <FallbackVideoTile name={myName}    role={myRole}    isLive />
+        <FallbackVideoTile name={theirName} role={theirRole} />
+      </div>
+    );
+  }
+
+  return (
+    <LiveKitRoom
+      token={livekitToken}
+      serverUrl={lkUrl}
+      video={mediaAllowed}
+      audio={mediaAllowed}
+      connect
+      options={{ disconnectOnPageLeave: true }}
+      style={{ display: "contents" } as React.CSSProperties}
+    >
+      <RoomAudioRenderer />
+      <div style={rowStyle}>
+        <VideoTiles
+          myName={myName} theirName={theirName}
+          myRole={myRole} theirRole={theirRole}
+          mediaAllowed={mediaAllowed}
+        />
+      </div>
+    </LiveKitRoom>
+  );
+}
+
+// Non-LiveKit fallback tile (shown while loading / when LK is not configured)
+function FallbackVideoTile({ name, role, isLive }: { name: string; role: string; isLive?: boolean }) {
+  return (
+    <div style={TILE_STYLE}>
+      <VideoAvatar name={name} />
       {isLive && (
-        <div style={{
-          position: "absolute", top: 10, left: 10,
-          background: "#dc2626", color: "#fff",
-          fontSize: "0.62rem", fontWeight: 800, letterSpacing: "0.1em",
-          padding: "2px 7px", borderRadius: "4px",
-        }}>
+        <div style={{ position: "absolute", top: 10, left: 10, background: "#dc2626", color: "#fff", fontSize: "0.62rem", fontWeight: 800, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: "4px" }}>
           LIVE
         </div>
       )}
-
-      {/* Name label */}
-      <div style={{
-        position: "absolute", bottom: 10, left: 10,
-        background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)",
-        color: "#fff", fontSize: "0.74rem", fontWeight: 600,
-        padding: "3px 10px", borderRadius: "20px",
-        border: "1px solid rgba(255,255,255,0.08)",
-      }}>
-        {role} – {name}
-      </div>
-
-      {/* Mic / cam icons */}
-      <div style={{
-        position: "absolute", bottom: 10, right: 10,
-        display: "flex", gap: "0.4rem",
-      }}>
+      <div style={NAME_LABEL_STYLE}>{role} – {name}</div>
+      <div style={{ position: "absolute", bottom: 10, right: 10, display: "flex", gap: "0.4rem" }}>
         {[
-          <svg key="mic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>,
-          <svg key="cam" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>,
+          <svg key="mic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>,
+          <svg key="cam" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>,
         ].map((icon, i) => (
-          <div key={i} style={{
-            width: 26, height: 26, borderRadius: "50%",
-            background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--muted)",
-          }}>
+          <div key={i} style={{ width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>
             {icon}
           </div>
         ))}
@@ -434,7 +609,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
   // WebSocket — real-time code sync between participants
   useEffect(() => {
-    const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000")
+    const base = (process.env.NEXT_PUBLIC_API_URL || "https://10.0.0.226:4000")
       .replace(/^http/, "ws");
     const ws = new WebSocket(`${base}/ws/session/${sessionLink}`);
     wsRef.current = ws;
@@ -665,16 +840,14 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
       </header>
 
       {/* ── Video row ── */}
-      <div style={{
-        flexShrink: 0, height: 154,
-        display: "flex", gap: "0.75rem",
-        padding: "0.6rem 0.75rem",
-        borderBottom: "1px solid var(--border)",
-        background: "#0a0c11",
-      }}>
-        <VideoTile name={myName}    role={isInterviewee ? "Interviewee" : "Interviewer"} isLive />
-        <VideoTile name={theirName} role={isInterviewee ? "Interviewer" : "Interviewee"} />
-      </div>
+      <VideoConferenceRow
+        sessionLink={sessionLink}
+        myName={myName}
+        theirName={theirName}
+        myRole={isInterviewee ? "Interviewee" : "Interviewer"}
+        theirRole={isInterviewee ? "Interviewer" : "Interviewee"}
+        getToken={getToken}
+      />
 
       {/* ── Workspace ── */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>

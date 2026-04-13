@@ -5,7 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.database import execute
 from app.security import verify_clerk_token, get_or_create_user
-from app.config import CLIENT_ORIGIN
+from app.config import CLIENT_ORIGIN, LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 from app.email_utils import send_friend_invite_email
 from app.mongo import questions_col
 import random as _random
@@ -551,6 +551,44 @@ async def complete_session(
         (session_link,),
     )
     return {"message": "Session marked as completed"}
+
+
+# ── LiveKit token endpoint ────────────────────────────────────────────────────
+
+@router.get("/link/{session_link}/livekit-token")
+async def get_livekit_token(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
+        raise HTTPException(status_code=503, detail="LiveKit is not configured")
+
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+    get_or_create_user(user_id, jwt_payload=payload)
+
+    session = execute(
+        "SELECT host_user_id, guest_user_id FROM sessions WHERE session_link = %s",
+        (session_link,),
+        fetch="one",
+    )
+    if not session or user_id not in (session["host_user_id"], session["guest_user_id"]):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user = execute("SELECT name FROM users WHERE id = %s", (user_id,), fetch="one")
+    participant_name = user["name"] if user else user_id
+
+    from livekit.api import AccessToken, VideoGrants  # imported here to fail gracefully if pkg missing
+    token = (
+        AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        .with_identity(user_id)
+        .with_name(participant_name)
+        .with_grants(VideoGrants(room_join=True, room=session_link))
+        .to_jwt()
+    )
+
+    return {"token": token, "url": LIVEKIT_URL}
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────────

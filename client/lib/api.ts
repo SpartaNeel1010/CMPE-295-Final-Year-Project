@@ -1,7 +1,7 @@
 declare const process: { env: Record<string, string | undefined> };
 const BASE_URL: string =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL) ||
-  "http://localhost:4000";
+  "https://10.0.0.226:4000";
 
 export type ApiError = {
   detail: string;
