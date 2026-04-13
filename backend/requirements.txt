@@ -6,3 +6,4 @@ python-dotenv
 pydantic[email]
 PyJWT[crypto]
 pymongo
+livekit-api

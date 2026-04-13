@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "https": "next dev --experimental-https"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.0.2",
+    "@livekit/components-react": "^2.7.3",
     "@monaco-editor/react": "^4.7.0",
+    "livekit-client": "^2.9.6",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
