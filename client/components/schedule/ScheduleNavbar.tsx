@@ -2,7 +2,14 @@
 
 import Link from "next/link";
 
-export default function ScheduleNavbar() {
+const NAV_LINKS = [
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/schedule",  label: "Schedule"   },
+  { href: "/sessions",  label: "My Sessions"},
+  { href: "/progress",  label: "Progress"   },
+];
+
+export default function ScheduleNavbar({ activePath }: { activePath?: string } = {}) {
   return (
     <nav className="sched-navbar" role="navigation" aria-label="App navigation">
       {/* Left: logo + nav links */}
@@ -12,12 +19,17 @@ export default function ScheduleNavbar() {
           Interview Ramp
         </Link>
         <div className="sched-nav-links" role="list">
-          <Link href="/dashboard" className="sched-nav-link" role="listitem">Dashboard</Link>
-          <Link href="/schedule" className="sched-nav-link active" role="listitem" aria-current="page">
-            Schedule
-          </Link>
-          <Link href="/sessions" className="sched-nav-link" role="listitem">My Sessions</Link>
-          <Link href="/progress" className="sched-nav-link" role="listitem">Progress</Link>
+          {NAV_LINKS.map(({ href, label }) => (
+            <Link
+              key={href}
+              href={href}
+              className={`sched-nav-link${activePath === href ? " active" : ""}`}
+              role="listitem"
+              aria-current={activePath === href ? "page" : undefined}
+            >
+              {label}
+            </Link>
+          ))}
         </div>
       </div>
 

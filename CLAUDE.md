@@ -80,3 +80,14 @@ NEXT_PUBLIC_API_URL=http://localhost:4000
 - Only one API endpoint exists: `GET /api/auth/me`
 - Schedule page uses hardcoded `SAMPLE_SESSIONS` — no real backend integration yet
 - Database only has a `users` table; sessions/scheduling tables are not yet created
+
+
+## Commands to start run client in https
+- npm run https
+
+## Commands to start backend in https
+ - cd backend 
+ - source .venv/bin/activate
+ - openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365 (only if .pem files are not present in backend)
+ - uvicorn main:app --ssl-keyfile=./key.pem --ssl-certfile=./cert.pem --port 4000 --host 0.0.0.0 --reload
+ - 
