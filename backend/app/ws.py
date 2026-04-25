@@ -4,6 +4,10 @@ WebSocket room manager for live coding sessions.
 Each session_link gets its own room. The server stores the last code_update
 so late-joining participants (e.g. the interviewer who connects after the
 interviewee has already started typing) receive the current state immediately.
+
+When a participant disconnects, a `participant_left` message is broadcast to
+all remaining connections so the frontend can lock the session and prompt
+the remaining participant to fill out feedback before exiting.
 """
 
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
@@ -41,6 +45,14 @@ class SessionRoom:
                 except Exception:
                     pass
 
+    async def broadcast_to_all(self, message: dict):
+        """Broadcast to every connection in the room (including the sender)."""
+        for ws in list(self.connections):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                pass
+
 
 _rooms: Dict[str, SessionRoom] = {}
 
@@ -57,5 +69,8 @@ async def session_ws(websocket: WebSocket, session_link: str):
             await room.broadcast(data, websocket)
     except WebSocketDisconnect:
         room.disconnect(websocket)
-        if not room.connections:
+        # Notify any remaining participant that the other user has left
+        if room.connections:
+            await room.broadcast_to_all({"type": "participant_left"})
+        else:
             _rooms.pop(session_link, None)

@@ -537,6 +537,37 @@ async def save_code(
 
 # ── Complete endpoint ──────────────────────────────────────────────────────────
 
+@router.post("/link/{session_link}/early-exit", status_code=200)
+async def early_exit_session(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    """
+    Called when a participant chooses to leave the session early (before the
+    60-minute timer expires).  Marks the session as completed so both
+    participants can move to the feedback flow.
+    """
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+
+    session = execute(
+        "SELECT id, status FROM sessions WHERE session_link = %s AND (host_user_id = %s OR guest_user_id = %s)",
+        (session_link, user_id, user_id),
+        fetch="one",
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["status"] in ("completed", "cancelled", "expired"):
+        return {"message": "Session already finalized"}
+
+    execute(
+        "UPDATE sessions SET status = 'completed' WHERE session_link = %s",
+        (session_link,),
+    )
+    return {"message": "Session ended early"}
+
+
 @router.post("/link/{session_link}/complete", status_code=200)
 async def complete_session(
     session_link: str,
@@ -695,6 +726,201 @@ async def get_livekit_token(
     )
 
     return {"token": token, "url": LIVEKIT_URL}
+
+
+# ── Dashboard endpoint ─────────────────────────────────────────────────────────
+
+@router.get("/dashboard")
+async def get_dashboard(
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    """
+    Aggregated dashboard payload — single round-trip for the homepage dashboard.
+
+    Returns:
+      - stats: total/completed/upcoming/cancelled counts + avg rating
+      - next_session: the soonest upcoming matched/pending session
+      - recent_sessions: last 5 completed sessions with received feedback
+      - track_breakdown: {dsa: {total, completed}, behavioral: {…}}
+      - difficulty_breakdown: {beginner, intermediate, advanced}
+      - monthly_activity: list of {month, count} for the past 6 months
+      - category_averages: dict of avg per feedback category
+    """
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+    get_or_create_user(user_id, jwt_payload=payload)
+
+    all_sessions = execute(
+        """SELECT s.*,
+                  hu.name AS host_name,
+                  gu.name AS guest_name
+           FROM sessions s
+           LEFT JOIN users hu ON s.host_user_id = hu.id
+           LEFT JOIN users gu ON s.guest_user_id = gu.id
+           WHERE (s.host_user_id = %s OR s.guest_user_id = %s)
+           ORDER BY s.scheduled_date DESC, s.scheduled_time DESC""",
+        (user_id, user_id),
+        fetch="all",
+    ) or []
+
+    def serialize(row: dict) -> dict:
+        out = {}
+        for k, v in row.items():
+            if hasattr(v, "isoformat"):
+                out[k] = v.isoformat()
+            elif type(v).__name__ == "UUID":
+                out[k] = str(v)
+            else:
+                out[k] = v
+        return out
+
+    sessions_list = [serialize(dict(s)) for s in all_sessions]
+
+    total       = len(sessions_list)
+    completed   = [s for s in sessions_list if s["status"] == "completed"]
+    upcoming    = [s for s in sessions_list if s["status"] in ("pending", "matched", "active")]
+    cancelled   = [s for s in sessions_list if s["status"] in ("cancelled", "expired")]
+
+    # ── Next session ──────────────────────────────────────────────────────────
+    next_session = None
+    for s in reversed(sessions_list):  # ascending date order
+        if s["status"] in ("matched", "pending", "active"):
+            partner = s["guest_name"] if s["host_user_id"] == user_id else s["host_name"]
+            next_session = {
+                "id": s["id"],
+                "session_link": s["session_link"],
+                "scheduled_date": s["scheduled_date"],
+                "scheduled_time": s["scheduled_time"],
+                "track": s["track"],
+                "difficulty": s["difficulty"],
+                "mode": s["mode"],
+                "status": s["status"],
+                "partner_name": partner,
+            }
+            break
+
+    # ── Recent completed sessions with feedback ───────────────────────────────
+    recent_completed = completed[:5]
+    recent_with_feedback = []
+    for s in recent_completed:
+        fb = execute(
+            """SELECT * FROM session_feedback
+               WHERE session_id = %s AND reviewee_id = %s""",
+            (s["id"], user_id),
+            fetch="one",
+        )
+        partner = s["guest_name"] if s["host_user_id"] == user_id else s["host_name"]
+        recent_with_feedback.append({
+            "id": s["id"],
+            "session_link": s["session_link"],
+            "scheduled_date": s["scheduled_date"],
+            "scheduled_time": s["scheduled_time"],
+            "track": s["track"],
+            "difficulty": s["difficulty"],
+            "partner_name": partner,
+            "feedback": serialize(dict(fb)) if fb else None,
+        })
+
+    # ── Track breakdown ───────────────────────────────────────────────────────
+    track_breakdown = {}
+    for track in ("dsa", "behavioral"):
+        track_sessions = [s for s in sessions_list if s["track"] == track]
+        track_breakdown[track] = {
+            "total": len(track_sessions),
+            "completed": len([s for s in track_sessions if s["status"] == "completed"]),
+            "upcoming": len([s for s in track_sessions if s["status"] in ("pending", "matched", "active")]),
+        }
+
+    # ── Difficulty breakdown ──────────────────────────────────────────────────
+    difficulty_breakdown = {}
+    for diff in ("beginner", "intermediate", "advanced"):
+        diff_sessions = [s for s in sessions_list if s.get("difficulty") == diff]
+        difficulty_breakdown[diff] = {
+            "total": len(diff_sessions),
+            "completed": len([s for s in diff_sessions if s["status"] == "completed"]),
+        }
+
+    # ── Monthly activity (last 6 months completed) ───────────────────────────
+    from collections import defaultdict
+    monthly: dict = defaultdict(int)
+    for s in sessions_list:
+        if s.get("started_at"):
+            try:
+                month_key = s["started_at"][:7]  # "YYYY-MM"
+                monthly[month_key] += 1
+            except Exception:
+                pass
+    # Build sorted list for last 6 months
+    import calendar
+    from datetime import datetime as _dt
+    month_activity = []
+    now = _dt.utcnow()
+    for i in range(5, -1, -1):
+        m = (now.month - i - 1) % 12 + 1
+        y = now.year - ((now.month - i - 1) // 12)
+        key = f"{y:04d}-{m:02d}"
+        month_activity.append({
+            "month": calendar.month_abbr[m],
+            "year": y,
+            "key": key,
+            "count": monthly.get(key, 0),
+        })
+
+    # ── Aggregate feedback category averages ─────────────────────────────────
+    all_feedback = execute(
+        """SELECT AVG(rating_coding)::float          AS avg_coding,
+                  AVG(rating_explaining)::float      AS avg_explaining,
+                  AVG(rating_navigating)::float      AS avg_navigating,
+                  AVG(rating_followups)::float       AS avg_followups,
+                  AVG(rating_communication)::float   AS avg_communication,
+                  AVG(rating_problem_solving)::float AS avg_problem_solving,
+                  COUNT(*) AS feedback_count
+           FROM session_feedback
+           WHERE reviewee_id = %s""",
+        (user_id,),
+        fetch="one",
+    )
+
+    def safe_float(v) -> float | None:
+        try:
+            return round(float(v), 2) if v is not None else None
+        except Exception:
+            return None
+
+    category_averages = None
+    if all_feedback and all_feedback["feedback_count"]:
+        category_averages = {
+            "coding":          safe_float(all_feedback["avg_coding"]),
+            "explaining":      safe_float(all_feedback["avg_explaining"]),
+            "navigating":      safe_float(all_feedback["avg_navigating"]),
+            "followups":       safe_float(all_feedback["avg_followups"]),
+            "communication":   safe_float(all_feedback["avg_communication"]),
+            "problem_solving": safe_float(all_feedback["avg_problem_solving"]),
+            "feedback_count":  all_feedback["feedback_count"],
+        }
+
+    # ── Overall average rating ────────────────────────────────────────────────
+    overall_avg = None
+    if category_averages:
+        vals = [v for k, v in category_averages.items() if k != "feedback_count" and v is not None]
+        overall_avg = round(sum(vals) / len(vals), 2) if vals else None
+
+    return {
+        "stats": {
+            "total":     total,
+            "completed": len(completed),
+            "upcoming":  len(upcoming),
+            "cancelled": len(cancelled),
+            "overall_avg_rating": overall_avg,
+        },
+        "next_session":       next_session,
+        "recent_sessions":    recent_with_feedback,
+        "track_breakdown":    track_breakdown,
+        "difficulty_breakdown": difficulty_breakdown,
+        "monthly_activity":   month_activity,
+        "category_averages":  category_averages,
+    }
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────────
