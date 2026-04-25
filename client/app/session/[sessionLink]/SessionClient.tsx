@@ -549,11 +549,15 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
   const [forcedR2At,        setForcedR2At]        = useState<number | null>(null);
   // Exit confirmation
   const [showExitConfirm,   setShowExitConfirm]   = useState(false);
+  const [exitLoading,       setExitLoading]       = useState(false);
   const [questions,       setQuestions]       = useState<Question[]>([]);
   // Feedback overlay state
   const [feedbackState,   setFeedbackState]   = useState<"idle" | "form" | "submitting" | "done" | "already_done">("idle");
   const [feedbackRatings, setFeedbackRatings] = useState<Record<string, number>>({});
   const [feedbackComments, setFeedbackComments] = useState("");
+  // Partner left state
+  const [partnerLeft,     setPartnerLeft]     = useState(false);
+  const [partnerLeftAckd, setPartnerLeftAckd] = useState(false); // dismissed the initial banner
 
   // Ref to track whether we've already initialised code/language (runs once, after questions arrive)
   const codeInitialised = useRef(false);
@@ -672,6 +676,17 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
         // Partner pressed "Ready for Round 2"
         if (msg.type === "ready_round2") {
           setPartnerReadyForR2(true);
+        }
+        // Partner disconnected — session is over for us too
+        if (msg.type === "participant_left") {
+          setPartnerLeft(true);
+          // Trigger the feedback flow immediately
+          authedRequest<{ given: Record<string, unknown> | null }>(
+            `/api/sessions/link/${sessionLink}/feedback`,
+            getTokenRef.current,
+          )
+            .then(data => setFeedbackState(data.given ? "already_done" : "form"))
+            .catch(() => setFeedbackState("form"));
         }
       } catch { /* malformed message */ }
     };
@@ -1032,10 +1047,10 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
           <button
             onClick={() => setShowExitConfirm(true)}
             style={{
-              fontSize: "0.72rem", color: "var(--muted)",
+              fontSize: "0.72rem", color: partnerLeft ? "#f87171" : "var(--muted)",
               padding: "3px 10px", borderRadius: "6px",
-              border: "1px solid var(--border)",
-              background: "transparent", cursor: "pointer",
+              border: `1px solid ${partnerLeft ? "#7f1d1d" : "var(--border)"}`,
+              background: partnerLeft ? "#2d0e0e" : "transparent", cursor: "pointer",
             }}
           >
             Exit
@@ -1430,7 +1445,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
           padding: "1rem",
         }}>
           <div style={{
-            width: "100%", maxWidth: 380,
+            width: "100%", maxWidth: 400,
             background: "var(--card)", border: "1px solid var(--border)",
             borderRadius: "14px", padding: "1.75rem 2rem",
           }}>
@@ -1446,41 +1461,118 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
                 </svg>
               </div>
               <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 800, color: "var(--foreground)" }}>
-                Leave session?
+                {sessionDone || partnerLeft ? "Leave session?" : "End session early?"}
               </h3>
             </div>
             <p style={{ fontSize: "0.83rem", color: "var(--muted)", lineHeight: 1.6, margin: "0 0 1.5rem" }}>
-              {round === 1 && !sessionDone
-                ? "Round 1 is still in progress. Your code is saved, but leaving will end your participation."
-                : round === 2 && !sessionDone
-                ? "Round 2 is still in progress. Your code is saved, but leaving will end your participation."
-                : "Your session is complete. Leaving will take you back to the schedule."}
+              {partnerLeft
+                ? `${theirName} has already left. You'll be taken to the feedback form before returning to the schedule.`
+                : sessionDone
+                ? "Your session is complete. You'll be taken to the feedback form before returning to the schedule."
+                : "Leaving early will end the session for both participants. Your code is saved. You'll need to fill out a feedback form before leaving."}
             </p>
             <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+              {!partnerLeft && (
+                <button
+                  onClick={() => setShowExitConfirm(false)}
+                  disabled={exitLoading}
+                  style={{
+                    padding: "0.45rem 1.1rem", borderRadius: "7px",
+                    border: "1px solid var(--border)", background: "transparent",
+                    color: "var(--muted)", fontSize: "0.83rem", fontWeight: 600,
+                    cursor: exitLoading ? "not-allowed" : "pointer",
+                    opacity: exitLoading ? 0.5 : 1,
+                  }}
+                >
+                  Stay
+                </button>
+              )}
               <button
-                onClick={() => setShowExitConfirm(false)}
-                style={{
-                  padding: "0.45rem 1.1rem", borderRadius: "7px",
-                  border: "1px solid var(--border)", background: "transparent",
-                  color: "var(--muted)", fontSize: "0.83rem", fontWeight: 600,
-                  cursor: "pointer",
+                disabled={exitLoading}
+                onClick={async () => {
+                  setExitLoading(true);
+                  // Call early-exit if session is still running
+                  if (!sessionDone) {
+                    try {
+                      await authedRequest(
+                        `/api/sessions/link/${sessionLink}/early-exit`,
+                        getTokenRef.current,
+                        { method: "POST" },
+                      );
+                    } catch { /* already completed is fine */ }
+                  }
+                  // Check feedback status then show form
+                  setShowExitConfirm(false);
+                  setExitLoading(false);
+                  try {
+                    const fb = await authedRequest<{ given: Record<string, unknown> | null }>(
+                      `/api/sessions/link/${sessionLink}/feedback`,
+                      getTokenRef.current,
+                    );
+                    setFeedbackState(fb.given ? "already_done" : "form");
+                  } catch {
+                    setFeedbackState("form");
+                  }
                 }}
-              >
-                Stay
-              </button>
-              <Link
-                href="/schedule"
                 style={{
                   padding: "0.45rem 1.3rem", borderRadius: "7px",
-                  border: "none", background: "#7f1d1d",
+                  border: "none", background: exitLoading ? "#4b1313" : "#7f1d1d",
                   color: "#fca5a5", fontSize: "0.83rem", fontWeight: 700,
-                  textDecoration: "none", display: "inline-flex", alignItems: "center",
+                  cursor: exitLoading ? "not-allowed" : "pointer",
+                  display: "inline-flex", alignItems: "center", gap: "0.4rem",
                 }}
               >
-                Exit anyway
-              </Link>
+                {exitLoading ? (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: "spin 0.8s linear infinite" }}>
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                    </svg>
+                    Ending…
+                  </>
+                ) : (partnerLeft || sessionDone) ? "Go to Feedback" : "End & Give Feedback"}
+              </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Partner-left notification banner (shown once, auto-dismissed) ── */}
+      {partnerLeft && feedbackState === "idle" && !partnerLeftAckd && (
+        <div style={{
+          position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+          zIndex: 300, maxWidth: 480, width: "calc(100% - 2rem)",
+          background: "#1c0e00", border: "1px solid #f59e0b",
+          borderRadius: "12px", padding: "1rem 1.25rem",
+          display: "flex", alignItems: "flex-start", gap: "0.75rem",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+          animation: "slideUp 0.3s ease",
+        }}>
+          <div style={{
+            width: 36, height: 36, flexShrink: 0,
+            borderRadius: "8px", background: "#2d1a00", border: "1px solid #f59e0b",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <line x1="23" y1="11" x2="17" y2="11"/>
+            </svg>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: "0.88rem", fontWeight: 700, color: "#fbbf24", marginBottom: "0.2rem" }}>
+              {theirName} has left the session
+            </div>
+            <p style={{ fontSize: "0.78rem", color: "#d97706", margin: 0, lineHeight: 1.5 }}>
+              The session has ended. Please click <strong style={{ color: "#fbbf24" }}>Exit</strong> to submit your feedback and return to the schedule.
+            </p>
+          </div>
+          <button
+            onClick={() => setPartnerLeftAckd(true)}
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "#d97706", fontSize: "1.1rem", lineHeight: 1, flexShrink: 0, padding: "2px" }}
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1618,9 +1710,11 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
                   {allRated ? "All categories rated — ready to submit" : `${FEEDBACK_CATEGORIES.length - FEEDBACK_CATEGORIES.filter(c => !!feedbackRatings[c.key]).length} categories remaining`}
                 </span>
                 <div style={{ display: "flex", gap: "0.6rem" }}>
-                  <Link href="/schedule" style={{ padding: "0.45rem 1rem", borderRadius: "7px", border: "1px solid var(--border)", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600, textDecoration: "none" }}>
-                    Skip
-                  </Link>
+                  {!partnerLeft && (
+                    <Link href="/schedule" style={{ padding: "0.45rem 1rem", borderRadius: "7px", border: "1px solid var(--border)", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600, textDecoration: "none" }}>
+                      Skip
+                    </Link>
+                  )}
                   <button
                     onClick={handleFeedbackSubmit}
                     disabled={!allRated || feedbackState === "submitting"}
@@ -1749,5 +1843,17 @@ const sessionStyles = `
   @keyframes pulse-border {
     0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); border-color: #f59e0b; }
     50%       { box-shadow: 0 0 0 4px rgba(245,158,11,0.25); border-color: #fbbf24; }
+  }
+
+  /* Slide-up animation for notifications */
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
+  /* Spinner animation for loading states */
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
   }
 `;
