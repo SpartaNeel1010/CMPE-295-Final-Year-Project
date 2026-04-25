@@ -77,6 +77,16 @@ class SaveCodeRequest(BaseModel):
     lang: str
 
 
+class FeedbackRequest(BaseModel):
+    rating_coding:          int
+    rating_explaining:      int
+    rating_navigating:      int
+    rating_followups:       int
+    rating_communication:   int
+    rating_problem_solving: int
+    comments:               Optional[str] = None
+
+
 # ── Peer endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/peer", status_code=201)
@@ -553,6 +563,102 @@ async def complete_session(
     return {"message": "Session marked as completed"}
 
 
+# ── Feedback endpoints ────────────────────────────────────────────────────────
+
+@router.post("/link/{session_link}/feedback", status_code=201)
+async def submit_feedback(
+    session_link: str,
+    body: FeedbackRequest,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    reviewer_id = payload.get("sub")
+
+    session = execute(
+        "SELECT id, host_user_id, guest_user_id, status FROM sessions WHERE session_link = %s",
+        (session_link,),
+        fetch="one",
+    )
+    if not session or reviewer_id not in (session["host_user_id"], session["guest_user_id"]):
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["status"] not in ("active", "completed"):
+        raise HTTPException(status_code=400, detail="Feedback can only be submitted for sessions that have taken place")
+    # Auto-complete if still marked active (handles race between /complete and /feedback)
+    if session["status"] == "active":
+        execute("UPDATE sessions SET status = 'completed' WHERE id = %s", (session["id"],))
+
+    reviewee_id = (
+        session["guest_user_id"] if reviewer_id == session["host_user_id"]
+        else session["host_user_id"]
+    )
+
+    for r in (
+        body.rating_coding, body.rating_explaining, body.rating_navigating,
+        body.rating_followups, body.rating_communication, body.rating_problem_solving,
+    ):
+        if not (1 <= r <= 5):
+            raise HTTPException(status_code=422, detail="All ratings must be between 1 and 5")
+
+    existing = execute(
+        "SELECT id FROM session_feedback WHERE session_id = %s AND reviewer_id = %s",
+        (session["id"], reviewer_id),
+        fetch="one",
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Feedback already submitted")
+
+    execute(
+        """INSERT INTO session_feedback
+           (session_id, reviewer_id, reviewee_id,
+            rating_coding, rating_explaining, rating_navigating,
+            rating_followups, rating_communication, rating_problem_solving,
+            comments)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            session["id"], reviewer_id, reviewee_id,
+            body.rating_coding, body.rating_explaining, body.rating_navigating,
+            body.rating_followups, body.rating_communication, body.rating_problem_solving,
+            body.comments,
+        ),
+    )
+    return {"submitted": True}
+
+
+@router.get("/link/{session_link}/feedback")
+async def get_feedback(
+    session_link: str,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+
+    session = execute(
+        "SELECT id, host_user_id, guest_user_id FROM sessions WHERE session_link = %s",
+        (session_link,),
+        fetch="one",
+    )
+    if not session or user_id not in (session["host_user_id"], session["guest_user_id"]):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    given = execute(
+        "SELECT * FROM session_feedback WHERE session_id = %s AND reviewer_id = %s",
+        (session["id"], user_id),
+        fetch="one",
+    )
+    received = execute(
+        "SELECT * FROM session_feedback WHERE session_id = %s AND reviewee_id = %s",
+        (session["id"], user_id),
+        fetch="one",
+    )
+
+    return {
+        "given":    dict(given)    if given    else None,
+        "received": dict(received) if received else None,
+    }
+
+
 # ── LiveKit token endpoint ────────────────────────────────────────────────────
 
 @router.get("/link/{session_link}/livekit-token")
@@ -607,7 +713,7 @@ async def list_sessions(
     overdue = execute(
         """SELECT id, scheduled_date, scheduled_time FROM sessions
            WHERE (host_user_id = %s OR guest_user_id = %s)
-             AND status IN ('pending', 'matched')""",
+             AND status IN ('pending', 'matched', 'active')""",
         (user_id, user_id),
         fetch="all",
     )
@@ -757,3 +863,29 @@ async def cancel_session(
     )
 
     return {"message": "Session cancelled"}
+
+
+@router.get("/{session_id}/feedback")
+async def get_feedback_by_id(
+    session_id: int,
+    request: Request,
+    _token=Depends(bearer_scheme),
+):
+    payload = await verify_clerk_token(request)
+    user_id = payload.get("sub")
+
+    session = execute(
+        "SELECT id, host_user_id, guest_user_id FROM sessions WHERE id = %s AND (host_user_id = %s OR guest_user_id = %s)",
+        (session_id, user_id, user_id),
+        fetch="one",
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    received = execute(
+        "SELECT * FROM session_feedback WHERE session_id = %s AND reviewee_id = %s",
+        (session_id, user_id),
+        fetch="one",
+    )
+
+    return {"received": dict(received) if received else None}

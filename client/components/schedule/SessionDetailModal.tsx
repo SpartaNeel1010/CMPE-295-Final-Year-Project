@@ -72,6 +72,36 @@ interface SessionDetail {
   invite: SessionInvite | null;
 }
 
+interface FeedbackData {
+  rating_coding:          number;
+  rating_explaining:      number;
+  rating_navigating:      number;
+  rating_followups:       number;
+  rating_communication:   number;
+  rating_problem_solving: number;
+  comments:               string | null;
+  created_at:             string;
+}
+
+const FEEDBACK_LABELS: { key: keyof FeedbackData; label: string }[] = [
+  { key: "rating_coding",          label: "Implementing / Coding the Solution" },
+  { key: "rating_explaining",      label: "Explaining the Solution" },
+  { key: "rating_navigating",      label: "Navigating to the Solution" },
+  { key: "rating_followups",       label: "Asking Follow-up Questions" },
+  { key: "rating_communication",   label: "Communication & Clarity" },
+  { key: "rating_problem_solving", label: "Problem-Solving Approach" },
+];
+
+function StarDisplay({ value }: { value: number }) {
+  return (
+    <span style={{ letterSpacing: "-1px", fontSize: "0.9rem" }}>
+      {[1,2,3,4,5].map(s => (
+        <span key={s} style={{ color: s <= value ? "#f59e0b" : "var(--border)" }}>★</span>
+      ))}
+    </span>
+  );
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string) {
@@ -114,15 +144,23 @@ export default function SessionDetailModal({
 }) {
   const { getToken } = useAuth();
   const router = useRouter();
-  const [session, setSession] = useState<SessionDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
-  const [copied,  setCopied]  = useState<"link" | "invite" | null>(null);
+  const [session,  setSession]  = useState<SessionDetail | null>(null);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+  const [copied,   setCopied]   = useState<"link" | "invite" | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackData | null | undefined>(undefined);
 
   useEffect(() => {
     setLoading(true);
     authedRequest<SessionDetail>(`/api/sessions/${sessionId}`, getToken)
-      .then(data => setSession(data))
+      .then(data => {
+        setSession(data);
+        if (data.status === "completed") {
+          authedRequest<{ received: FeedbackData | null }>(`/api/sessions/${sessionId}/feedback`, getToken)
+            .then(fb => setFeedback(fb.received))
+            .catch(() => setFeedback(null));
+        }
+      })
       .catch(err  => setError(err.message))
       .finally(() => setLoading(false));
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -296,6 +334,42 @@ export default function SessionDetailModal({
                 <div style={{ paddingTop: "0.7rem", fontSize: "0.74rem", color: "var(--muted)" }}>
                   Scheduled on {new Date(session.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                 </div>
+
+                {/* Feedback received — only for completed sessions */}
+                {session.status === "completed" && (
+                  <div style={{ marginTop: "1.1rem" }}>
+                    <div style={{ fontSize: "0.7rem", fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--primary-light)", marginBottom: "0.65rem" }}>
+                      Feedback Received
+                    </div>
+                    {feedback === undefined && (
+                      <p style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Loading feedback…</p>
+                    )}
+                    {feedback === null && (
+                      <p style={{ fontSize: "0.78rem", color: "var(--muted)", fontStyle: "italic" }}>
+                        Your partner has not submitted feedback yet.
+                      </p>
+                    )}
+                    {feedback && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
+                        {FEEDBACK_LABELS.map(({ key, label }) => (
+                          <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem" }}>
+                            <span style={{ fontSize: "0.78rem", color: "var(--foreground)", flex: 1 }}>{label}</span>
+                            <StarDisplay value={feedback[key] as number} />
+                          </div>
+                        ))}
+                        {feedback.comments && (
+                          <div style={{ marginTop: "0.4rem", padding: "0.65rem 0.85rem", background: "var(--background)", border: "1px solid var(--border)", borderRadius: "8px" }}>
+                            <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "var(--muted)", marginBottom: "0.3rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>Comments</div>
+                            <p style={{ fontSize: "0.8rem", color: "var(--foreground)", lineHeight: 1.6, margin: 0 }}>{feedback.comments}</p>
+                          </div>
+                        )}
+                        <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: "0.15rem" }}>
+                          Submitted {new Date(feedback.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}

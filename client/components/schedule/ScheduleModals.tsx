@@ -75,29 +75,23 @@ const DOW = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 type Slot = { label: string; period: SlotFilter; available: boolean };
 
-// These mirror the backend SLOTS_BY_TRACK constants exactly.
+// Slots from 9 AM to 5 PM in 1-hour increments, same for all tracks.
 // All slots start as available; the API overlays real availability on date select.
+const BASE_SLOTS: Slot[] = [
+  { label: "9:00 AM",  period: "morning",   available: true },
+  { label: "10:00 AM", period: "morning",   available: true },
+  { label: "11:00 AM", period: "morning",   available: true },
+  { label: "12:00 PM", period: "afternoon", available: true },
+  { label: "1:00 PM",  period: "afternoon", available: true },
+  { label: "2:00 PM",  period: "afternoon", available: true },
+  { label: "3:00 PM",  period: "afternoon", available: true },
+  { label: "4:00 PM",  period: "afternoon", available: true },
+  { label: "5:00 PM",  period: "afternoon", available: true },
+];
+
 const DEFAULT_SLOTS: Record<string, Slot[]> = {
-  dsa: [
-    { label: "9:00 AM",  period: "morning",   available: true },
-    { label: "11:00 AM", period: "morning",   available: true },
-    { label: "1:00 PM",  period: "afternoon", available: true },
-    { label: "3:00 PM",  period: "afternoon", available: true },
-    { label: "5:00 PM",  period: "afternoon", available: true },
-    { label: "7:00 PM",  period: "evening",   available: true },
-    { label: "9:00 PM",  period: "evening",   available: true },
-  ],
-  behavioral: [
-    { label: "9:00 AM",  period: "morning",   available: true },
-    { label: "10:30 AM", period: "morning",   available: true },
-    { label: "12:00 PM", period: "afternoon", available: true },
-    { label: "1:30 PM",  period: "afternoon", available: true },
-    { label: "3:00 PM",  period: "afternoon", available: true },
-    { label: "4:30 PM",  period: "afternoon", available: true },
-    { label: "6:00 PM",  period: "evening",   available: true },
-    { label: "7:30 PM",  period: "evening",   available: true },
-    { label: "9:00 PM",  period: "evening",   available: true },
-  ],
+  dsa:        BASE_SLOTS,
+  behavioral: BASE_SLOTS,
 };
 
 // ── Mini-calendar component ───────────────────────────────────────────────────
@@ -324,9 +318,28 @@ export function PeerModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     return () => document.body.classList.remove("modal-open");
   }, []);
 
-  const filteredSlots = slots.filter(
-    s => slotFilter === "all" || s.period === slotFilter
-  );
+  const filteredSlots = slots.filter(s => {
+    if (slotFilter !== "all" && s.period !== slotFilter) return false;
+    // Hide slots that have already passed when the selected date is today
+    if (selDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const selDay = new Date(selDate);
+      selDay.setHours(0, 0, 0, 0);
+      if (selDay.getTime() === today.getTime()) {
+        const [timePart, ampm] = s.label.split(" ");
+        const [hStr, mStr] = timePart.split(":");
+        let hour = parseInt(hStr, 10);
+        const min = parseInt(mStr, 10);
+        if (ampm === "PM" && hour !== 12) hour += 12;
+        if (ampm === "AM" && hour === 12) hour = 0;
+        const slotTime = new Date();
+        slotTime.setHours(hour, min, 0, 0);
+        if (slotTime <= new Date()) return false;
+      }
+    }
+    return true;
+  });
 
   const canContinue = [
     !!track,

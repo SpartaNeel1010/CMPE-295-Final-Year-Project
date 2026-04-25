@@ -74,6 +74,16 @@ interface Question {
   test_cases: { label: string; input_display: string; expected_display: string }[];
 }
 
+// ── Test result from /api/execute ────────────────────────────────────────────
+
+interface TestResult {
+  label:    string;
+  passed:   boolean;
+  got:      string;    // JSON-serialised value
+  expected: string;    // JSON-serialised value
+  hidden:   boolean;
+}
+
 // ── Language config ───────────────────────────────────────────────────────────
 
 const LANGUAGES = ["Python", "JavaScript", "TypeScript", "Java", "C++", "Go"] as const;
@@ -454,9 +464,10 @@ function TabBar({ tabs, active, onChange }: { tabs: string[]; active: string; on
 // ── Test case card ────────────────────────────────────────────────────────────
 
 function TestCard({
-  label, input, expected, got, passed, pending,
+  label, input, expected, got, passed, pending, hidden,
 }: {
-  label: string; input: string; expected: string; got: string; passed: boolean; pending?: boolean;
+  label: string; input: string; expected: string; got: string;
+  passed: boolean; pending?: boolean; hidden?: boolean;
 }) {
   const badge = pending
     ? { bg: "var(--card)", color: "var(--muted)", border: "var(--border)", text: "Pending" }
@@ -466,22 +477,38 @@ function TestCard({
 
   return (
     <div style={{
-      background: "var(--card)", border: "1px solid var(--border)",
+      background: "var(--card)", border: `1px solid ${hidden && !pending ? (passed ? "#166534" : "#7f1d1d") : "var(--border)"}`,
       borderRadius: "8px", padding: "0.75rem 1rem",
       display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem",
+      opacity: hidden ? 0.85 : 1,
     }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "0.76rem", fontWeight: 700, color: "var(--foreground)", marginBottom: "0.4rem" }}>
-          {label}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
+          <span style={{ fontSize: "0.76rem", fontWeight: 700, color: "var(--foreground)" }}>
+            {label}
+          </span>
+          {hidden && (
+            <span style={{ fontSize: "0.62rem", fontWeight: 700, color: "var(--muted)",
+              background: "var(--card-hover)", border: "1px solid var(--border)",
+              padding: "1px 6px", borderRadius: "999px", letterSpacing: "0.04em" }}>
+              HIDDEN
+            </span>
+          )}
         </div>
-        <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
-          {[["Input", input], ["Expected", expected], ...(!pending ? [["Got", got]] : [])].map(([k, v]) => (
-            <div key={k}>
-              <span style={{ fontSize: "0.68rem", color: "var(--muted)", display: "block" }}>{k}</span>
-              <code style={{ fontSize: "0.74rem", color: "var(--accent)", fontFamily: "monospace" }}>{v}</code>
-            </div>
-          ))}
-        </div>
+        {hidden && !pending ? (
+          <div style={{ fontSize: "0.72rem", color: "var(--muted)", fontStyle: "italic" }}>
+            Hidden test case — details not shown
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
+            {[["Input", input], ["Expected", expected], ...(!pending ? [["Got", got]] : [])].map(([k, v]) => (
+              <div key={k}>
+                <span style={{ fontSize: "0.68rem", color: "var(--muted)", display: "block" }}>{k}</span>
+                <code style={{ fontSize: "0.74rem", color: "var(--accent)", fontFamily: "monospace" }}>{v}</code>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div style={{
         flexShrink: 0,
@@ -514,7 +541,19 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
   const [lastRun,         setLastRun]         = useState<string | null>(null);
   const [running,         setRunning]         = useState(false);
   const [submittedRounds, setSubmittedRounds] = useState<[boolean, boolean]>([false, false]);
+  const [testResults,     setTestResults]     = useState<TestResult[] | null>(null);
+  const [isSubmitRun,     setIsSubmitRun]     = useState(false);
+  // Round-advance handshake
+  const [myReadyForR2,      setMyReadyForR2]      = useState(false);
+  const [partnerReadyForR2, setPartnerReadyForR2] = useState(false);
+  const [forcedR2At,        setForcedR2At]        = useState<number | null>(null);
+  // Exit confirmation
+  const [showExitConfirm,   setShowExitConfirm]   = useState(false);
   const [questions,       setQuestions]       = useState<Question[]>([]);
+  // Feedback overlay state
+  const [feedbackState,   setFeedbackState]   = useState<"idle" | "form" | "submitting" | "done" | "already_done">("idle");
+  const [feedbackRatings, setFeedbackRatings] = useState<Record<string, number>>({});
+  const [feedbackComments, setFeedbackComments] = useState("");
 
   // Ref to track whether we've already initialised code/language (runs once, after questions arrive)
   const codeInitialised = useRef(false);
@@ -616,7 +655,9 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
     ws.onmessage = (e) => {
       try {
-        const msg = JSON.parse(e.data) as { type: string; code: string; round: number; language?: string };
+        const msg = JSON.parse(e.data) as {
+          type: string; code: string; round: number; language?: string;
+        };
         if (msg.type === "code_update") {
           setCodeByRound(prev => {
             const next: [string, string] = [prev[0], prev[1]];
@@ -627,6 +668,10 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
             const lang = (Object.entries(LANG_KEY).find(([, v]) => v === msg.language)?.[0]) as Language | undefined;
             if (lang) setLanguage(lang);
           }
+        }
+        // Partner pressed "Ready for Round 2"
+        if (msg.type === "ready_round2") {
+          setPartnerReadyForR2(true);
         }
       } catch { /* malformed message */ }
     };
@@ -654,9 +699,15 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
   }, [codeByRound, language]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Derived: elapsed from started_at anchor ────────────────────────────────
-  const elapsed = session?.started_at
+  const naturalElapsed = session?.started_at
     ? Math.floor((now - new Date(session.started_at).getTime()) / 1000)
     : 0;
+
+  // If both players clicked "Ready for Round 2" before the timer ran out,
+  // act as if ROUND_SECS seconds elapsed at the moment they both agreed.
+  const elapsed = forcedR2At !== null && naturalElapsed < ROUND_SECS
+    ? ROUND_SECS + Math.max(0, Math.floor((now - forcedR2At) / 1000))
+    : naturalElapsed;
 
   // ── Derived: round, roles, current question ────────────────────────────────
   const round: 1 | 2         = elapsed < ROUND_SECS ? 1 : 2;
@@ -674,17 +725,46 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
   isIntervieweeRef.current = isInterviewee;
   roundRef.current         = round;
 
-  // Mark session completed in DB when timer runs out
+  // ── Both players ready → advance to round 2 ──────────────────────────────
+  useEffect(() => {
+    if (myReadyForR2 && partnerReadyForR2 && forcedR2At === null && round === 1) {
+      setForcedR2At(Date.now());
+      // Clear test results so round-2 question starts fresh
+      setTestResults(null);
+      setIsSubmitRun(false);
+    }
+  }, [myReadyForR2, partnerReadyForR2, forcedR2At, round]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset test panel when round changes naturally (timer flip)
+  const prevRoundRef = useRef<1 | 2>(1);
+  useEffect(() => {
+    if (round !== prevRoundRef.current) {
+      prevRoundRef.current = round;
+      setTestResults(null);
+      setIsSubmitRun(false);
+    }
+  }, [round]);
+
+  // Mark session completed in DB when timer runs out, THEN check feedback state
   const completeCalledRef = useRef(false);
   useEffect(() => {
-    if (sessionDone && session && !completeCalledRef.current) {
-      completeCalledRef.current = true;
-      authedRequest(
-        `/api/sessions/link/${sessionLink}/complete`,
-        getTokenRef.current,
-        { method: "POST" },
-      ).catch(() => {});
-    }
+    if (!sessionDone || !session || completeCalledRef.current) return;
+    completeCalledRef.current = true;
+    // Call complete first, then—regardless of outcome—check feedback
+    authedRequest(
+      `/api/sessions/link/${sessionLink}/complete`,
+      getTokenRef.current,
+      { method: "POST" },
+    )
+      .catch(() => {}) // session may already be finalised; that's fine
+      .finally(() => {
+        authedRequest<{ given: Record<string, unknown> | null }>(
+          `/api/sessions/link/${sessionLink}/feedback`,
+          getTokenRef.current,
+        )
+          .then(data => setFeedbackState(data.given ? "already_done" : "form"))
+          .catch(() => setFeedbackState("form"));
+      });
   }, [sessionDone, session, sessionLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentQuestion = questions[round - 1] ?? null;
@@ -731,27 +811,103 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
     }));
   };
 
-  const handleRunCode = () => {
-    setRunning(true);
-    setTimeout(() => {
-      setRunning(false);
-      setLastRun("just now");
-      setActiveTab("Test Cases");
-    }, 1400);
+  const handleReadyForRound2 = () => {
+    if (myReadyForR2) return; // already clicked
+    setMyReadyForR2(true);
+    wsRef.current?.send(JSON.stringify({ type: "ready_round2" }));
   };
 
-  const handleSubmit = () => {
+  const handleRunCode = async () => {
+    if (!currentQuestion || running) return;
     setRunning(true);
-    setTimeout(() => {
+    setTestResults(null);
+    setIsSubmitRun(false);
+    setActiveTab("Test Cases");
+    try {
+      const data = await authedRequest<{ results: TestResult[]; stderr?: string }>(
+        "/api/execute",
+        getTokenRef.current,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            question_slug: currentQuestion.slug,
+            language:      LANG_KEY[language],
+            code:          currentCode,
+            mode:          "run",
+          }),
+        },
+      );
+      setTestResults(data.results ?? []);
+      setLastRun("just now");
+    } catch {
+      setTestResults([]);
+    } finally {
       setRunning(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!currentQuestion || running || submitted) return;
+    setRunning(true);
+    setTestResults(null);
+    setIsSubmitRun(true);
+    setActiveTab("Test Cases");
+    try {
+      const data = await authedRequest<{ results: TestResult[]; stderr?: string }>(
+        "/api/execute",
+        getTokenRef.current,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            question_slug: currentQuestion.slug,
+            language:      LANG_KEY[language],
+            code:          currentCode,
+            mode:          "submit",
+          }),
+        },
+      );
+      setTestResults(data.results ?? []);
       setSubmittedRounds(prev => {
         const next: [boolean, boolean] = [prev[0], prev[1]];
         next[round - 1] = true;
         return next;
       });
       setLastRun("just now");
-      setActiveTab("Test Cases");
-    }, 2000);
+    } catch {
+      setTestResults([]);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const FEEDBACK_CATEGORIES = [
+    { key: "rating_coding",          label: "Implementing / Coding the Solution",   desc: "How well did they translate the approach into working code?" },
+    { key: "rating_explaining",      label: "Explaining the Solution",              desc: "How clearly did they articulate their reasoning?" },
+    { key: "rating_navigating",      label: "Navigating to the Solution",           desc: "How effectively did they approach and explore the problem?" },
+    { key: "rating_followups",       label: "Asking Follow-up Questions",           desc: "How insightful were their probing questions?" },
+    { key: "rating_communication",   label: "Communication & Clarity",              desc: "How clear and professional was their overall communication?" },
+    { key: "rating_problem_solving", label: "Problem-Solving Approach",             desc: "How structured and methodical was their thinking?" },
+  ] as const;
+
+  const allRated = FEEDBACK_CATEGORIES.every(c => !!feedbackRatings[c.key]);
+
+  const handleFeedbackSubmit = async () => {
+    if (!allRated) return;
+    setFeedbackState("submitting");
+    try {
+      await authedRequest(
+        `/api/sessions/link/${sessionLink}/feedback`,
+        getTokenRef.current,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...feedbackRatings, comments: feedbackComments || null }),
+        },
+      );
+      setFeedbackState("done");
+    } catch {
+      setFeedbackState("form");
+      alert("Failed to submit feedback. Please try again.");
+    }
   };
 
   if (error) {
@@ -824,18 +980,66 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
           )}
         </div>
 
-        {/* Right: connected + exit */}
+        {/* Right: connected + round-advance + exit */}
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexShrink: 0 }}>
+          {/* Connected dot */}
           <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px #22c55e" }} />
             <span style={{ fontSize: "0.76rem", color: "#22c55e", fontWeight: 600 }}>Connected</span>
           </div>
-          <Link href="/schedule" style={{
-            fontSize: "0.72rem", color: "var(--muted)", textDecoration: "none",
-            padding: "3px 10px", borderRadius: "6px", border: "1px solid var(--border)",
-          }}>
+
+          {/* "Ready for Round 2" — only visible in round 1 and before session ends */}
+          {round === 1 && !sessionDone && (
+            <button
+              onClick={handleReadyForRound2}
+              disabled={myReadyForR2}
+              title={myReadyForR2 ? `Waiting for ${theirName}…` : "Signal you're ready to start Round 2"}
+              style={{
+                fontSize: "0.72rem", fontWeight: 700,
+                padding: "4px 11px", borderRadius: "6px",
+                border: `1px solid ${partnerReadyForR2 && !myReadyForR2 ? "#f59e0b" : myReadyForR2 ? "var(--border)" : "#0369a1"}`,
+                background: partnerReadyForR2 && !myReadyForR2 ? "#1c1200" : myReadyForR2 ? "transparent" : "#0c1f2e",
+                color: partnerReadyForR2 && !myReadyForR2 ? "#f59e0b" : myReadyForR2 ? "var(--muted)" : "#38bdf8",
+                cursor: myReadyForR2 ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", gap: "0.35rem",
+                animation: partnerReadyForR2 && !myReadyForR2 ? "pulse-border 1.2s infinite" : "none",
+              }}
+            >
+              {myReadyForR2 ? (
+                <>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  Waiting for {theirName}…
+                </>
+              ) : partnerReadyForR2 ? (
+                <>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+                  {theirName} is ready! →
+                </>
+              ) : (
+                <>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
+                  Ready for Round 2
+                </>
+              )}
+            </button>
+          )}
+
+          {/* Exit button — always shows confirmation */}
+          <button
+            onClick={() => setShowExitConfirm(true)}
+            style={{
+              fontSize: "0.72rem", color: "var(--muted)",
+              padding: "3px 10px", borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "transparent", cursor: "pointer",
+            }}
+          >
             Exit
-          </Link>
+          </button>
         </div>
       </header>
 
@@ -1141,20 +1345,60 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
             <div style={{ flex: 1, overflowY: "auto", padding: "0.6rem 1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
               {activeTab === "Test Cases" && (
                 <>
-                  {currentQuestion
-                    ? currentQuestion.test_cases.map((tc, i) => (
+                  {/* Results header row */}
+                  {testResults !== null && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.25rem" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "var(--muted)" }}>
+                          {isSubmitRun ? "Submit Results" : "Run Results"}
+                        </span>
+                        <span style={{
+                          fontSize: "0.7rem", fontWeight: 700,
+                          color: testResults.every(r => r.passed) ? "#4ade80" : "#f87171",
+                          background: testResults.every(r => r.passed) ? "#0d2b1e" : "#2d0e0e",
+                          border: `1px solid ${testResults.every(r => r.passed) ? "#166534" : "#7f1d1d"}`,
+                          padding: "1px 8px", borderRadius: "999px",
+                        }}>
+                          {testResults.filter(r => r.passed).length}/{testResults.length} passed
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Show real results if available, else show pending cards */}
+                  {testResults !== null ? (
+                    testResults.length === 0 ? (
+                      <p style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+                        No results — check your code for errors.
+                      </p>
+                    ) : (
+                      testResults.map((r, i) => (
                         <TestCard
                           key={i}
-                          label={tc.label}
-                          input={tc.input_display}
-                          expected={tc.expected_display}
-                          got={lastRun ? "—" : "—"}
-                          passed={false}
-                          pending={!lastRun}
+                          label={r.label}
+                          input={r.hidden ? "" : r.got}
+                          expected={r.hidden ? "" : r.expected}
+                          got={r.got}
+                          passed={r.passed}
+                          hidden={r.hidden}
                         />
                       ))
-                    : <p style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Loading test cases…</p>
-                  }
+                    )
+                  ) : (
+                    currentQuestion
+                      ? currentQuestion.test_cases.map((tc, i) => (
+                          <TestCard
+                            key={i}
+                            label={tc.label}
+                            input={tc.input_display}
+                            expected={tc.expected_display}
+                            got=""
+                            passed={false}
+                            pending
+                          />
+                        ))
+                      : <p style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Loading test cases…</p>
+                  )}
                 </>
               )}
               {activeTab === "Console" && (
@@ -1176,6 +1420,227 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
       </div>
 
       <style>{sessionStyles}</style>
+
+      {/* ── Exit confirmation modal ── */}
+      {showExitConfirm && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 200,
+          background: "rgba(7,8,13,0.85)", backdropFilter: "blur(6px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: "1rem",
+        }}>
+          <div style={{
+            width: "100%", maxWidth: 380,
+            background: "var(--card)", border: "1px solid var(--border)",
+            borderRadius: "14px", padding: "1.75rem 2rem",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.75rem" }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: "8px",
+                background: "#2d0e0e", border: "1px solid #7f1d1d",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 800, color: "var(--foreground)" }}>
+                Leave session?
+              </h3>
+            </div>
+            <p style={{ fontSize: "0.83rem", color: "var(--muted)", lineHeight: 1.6, margin: "0 0 1.5rem" }}>
+              {round === 1 && !sessionDone
+                ? "Round 1 is still in progress. Your code is saved, but leaving will end your participation."
+                : round === 2 && !sessionDone
+                ? "Round 2 is still in progress. Your code is saved, but leaving will end your participation."
+                : "Your session is complete. Leaving will take you back to the schedule."}
+            </p>
+            <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setShowExitConfirm(false)}
+                style={{
+                  padding: "0.45rem 1.1rem", borderRadius: "7px",
+                  border: "1px solid var(--border)", background: "transparent",
+                  color: "var(--muted)", fontSize: "0.83rem", fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Stay
+              </button>
+              <Link
+                href="/schedule"
+                style={{
+                  padding: "0.45rem 1.3rem", borderRadius: "7px",
+                  border: "none", background: "#7f1d1d",
+                  color: "#fca5a5", fontSize: "0.83rem", fontWeight: 700,
+                  textDecoration: "none", display: "inline-flex", alignItems: "center",
+                }}
+              >
+                Exit anyway
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Feedback overlay ── */}
+      {(feedbackState === "form" || feedbackState === "submitting" || feedbackState === "done" || feedbackState === "already_done") && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 100,
+          background: "rgba(7, 8, 13, 0.92)", backdropFilter: "blur(8px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: "1rem",
+        }}>
+          <div style={{
+            width: "100%", maxWidth: 560,
+            background: "var(--card)", border: "1px solid var(--border)",
+            borderRadius: "16px", overflow: "hidden",
+            maxHeight: "90vh", display: "flex", flexDirection: "column",
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: "1.25rem 1.5rem 1rem",
+              borderBottom: "1px solid var(--border)",
+              background: "linear-gradient(135deg, #0f1117 0%, #13161e 100%)",
+              flexShrink: 0,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.3rem" }}>
+                <div style={{ width: 28, height: 28, background: "var(--primary)", borderRadius: "7px", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: "0.7rem", fontWeight: 800 }}>IR</div>
+                <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Session Complete</span>
+              </div>
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 800, color: "var(--foreground)", letterSpacing: "-0.02em", margin: 0 }}>
+                {feedbackState === "done" || feedbackState === "already_done"
+                  ? "Feedback Submitted"
+                  : `Rate ${theirName}`}
+              </h2>
+              {feedbackState === "form" || feedbackState === "submitting" ? (
+                <p style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.3rem" }}>
+                  Rate your partner as the <strong style={{ color: "var(--foreground)" }}>interviewer</strong> (Round 1) and <strong style={{ color: "var(--foreground)" }}>interviewee</strong> (Round 2). Your feedback is anonymous until both submit.
+                </p>
+              ) : null}
+            </div>
+
+            {/* Body */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "1.25rem 1.5rem" }}>
+
+              {(feedbackState === "done" || feedbackState === "already_done") && (
+                <div style={{ textAlign: "center", padding: "2rem 0" }}>
+                  <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>✓</div>
+                  <div style={{ fontSize: "1rem", fontWeight: 700, color: "var(--foreground)", marginBottom: "0.4rem" }}>
+                    {feedbackState === "already_done" ? "You've already submitted feedback" : "Thank you for your feedback!"}
+                  </div>
+                  <p style={{ fontSize: "0.82rem", color: "var(--muted)", maxWidth: 340, margin: "0 auto 1.5rem" }}>
+                    Your rating for <strong style={{ color: "var(--foreground)" }}>{theirName}</strong> has been recorded. You can view the feedback you received in the session detail page.
+                  </p>
+                  <Link
+                    href="/schedule"
+                    style={{
+                      display: "inline-block",
+                      padding: "0.6rem 1.6rem", borderRadius: "8px",
+                      background: "var(--primary)", color: "white",
+                      fontSize: "0.85rem", fontWeight: 700, textDecoration: "none",
+                    }}
+                  >
+                    Back to Schedule
+                  </Link>
+                </div>
+              )}
+
+              {(feedbackState === "form" || feedbackState === "submitting") && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+                  {FEEDBACK_CATEGORIES.map(cat => (
+                    <div key={cat.key}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.25rem" }}>
+                        <span style={{ fontSize: "0.84rem", fontWeight: 700, color: "var(--foreground)" }}>{cat.label}</span>
+                        {feedbackRatings[cat.key] && (
+                          <span style={{ fontSize: "0.72rem", color: "var(--primary-light)", fontWeight: 600 }}>
+                            {["", "Poor", "Fair", "Good", "Great", "Excellent"][feedbackRatings[cat.key]]}
+                          </span>
+                        )}
+                      </div>
+                      <p style={{ fontSize: "0.72rem", color: "var(--muted)", marginBottom: "0.5rem" }}>{cat.desc}</p>
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                        {[1, 2, 3, 4, 5].map(star => (
+                          <button
+                            key={star}
+                            onClick={() => setFeedbackRatings(prev => ({ ...prev, [cat.key]: star }))}
+                            disabled={feedbackState === "submitting"}
+                            style={{
+                              background: "transparent", border: "none", cursor: "pointer",
+                              padding: "2px 1px", fontSize: "1.6rem", lineHeight: 1,
+                              color: (feedbackRatings[cat.key] ?? 0) >= star ? "#f59e0b" : "var(--border)",
+                              transition: "color 0.12s, transform 0.1s",
+                              transform: (feedbackRatings[cat.key] ?? 0) >= star ? "scale(1.1)" : "scale(1)",
+                            }}
+                            aria-label={`${star} star${star !== 1 ? "s" : ""} for ${cat.label}`}
+                          >
+                            ★
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div>
+                    <label style={{ fontSize: "0.84rem", fontWeight: 700, color: "var(--foreground)", display: "block", marginBottom: "0.4rem" }}>
+                      Additional Comments <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
+                    </label>
+                    <textarea
+                      value={feedbackComments}
+                      onChange={e => setFeedbackComments(e.target.value)}
+                      disabled={feedbackState === "submitting"}
+                      placeholder={`Share specific observations about ${theirName}'s performance…`}
+                      rows={4}
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        background: "var(--background)", border: "1px solid var(--border)",
+                        borderRadius: "8px", padding: "0.65rem 0.85rem",
+                        color: "var(--foreground)", fontSize: "0.82rem",
+                        resize: "vertical", outline: "none", lineHeight: 1.6,
+                        fontFamily: "inherit",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            {(feedbackState === "form" || feedbackState === "submitting") && (
+              <div style={{
+                padding: "1rem 1.5rem",
+                borderTop: "1px solid var(--border)",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                flexShrink: 0, background: "var(--card)",
+              }}>
+                <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                  {allRated ? "All categories rated — ready to submit" : `${FEEDBACK_CATEGORIES.length - FEEDBACK_CATEGORIES.filter(c => !!feedbackRatings[c.key]).length} categories remaining`}
+                </span>
+                <div style={{ display: "flex", gap: "0.6rem" }}>
+                  <Link href="/schedule" style={{ padding: "0.45rem 1rem", borderRadius: "7px", border: "1px solid var(--border)", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600, textDecoration: "none" }}>
+                    Skip
+                  </Link>
+                  <button
+                    onClick={handleFeedbackSubmit}
+                    disabled={!allRated || feedbackState === "submitting"}
+                    style={{
+                      padding: "0.45rem 1.4rem", borderRadius: "7px",
+                      border: "none", background: allRated ? "var(--primary)" : "var(--border)",
+                      color: allRated ? "white" : "var(--muted)",
+                      fontSize: "0.8rem", fontWeight: 700,
+                      cursor: allRated ? "pointer" : "not-allowed",
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    {feedbackState === "submitting" ? "Submitting…" : "Submit Feedback"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1279,4 +1744,10 @@ const sessionStyles = `
   /* Resize handles */
   .h-resizer:hover, .h-resizer:active { background: #4f5b8a; }
   .v-resizer:hover, .v-resizer:active { background: #4f5b8a; }
+
+  /* Partner-ready pulse on the Round 2 button */
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); border-color: #f59e0b; }
+    50%       { box-shadow: 0 0 0 4px rgba(245,158,11,0.25); border-color: #fbbf24; }
+  }
 `;

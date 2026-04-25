@@ -7,3 +7,4 @@ pydantic[email]
 PyJWT[crypto]
 pymongo
 livekit-api
+httpx

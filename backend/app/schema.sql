@@ -48,6 +48,23 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lang_round1   TEXT NOT NULL DEFAUL
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lang_round2   TEXT NOT NULL DEFAULT 'python';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS started_at    TIMESTAMPTZ;
 
+-- Session feedback: each participant rates the other after the session
+CREATE TABLE IF NOT EXISTS session_feedback (
+  id                    SERIAL PRIMARY KEY,
+  session_id            INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  reviewer_id           VARCHAR(255) NOT NULL REFERENCES users(id),
+  reviewee_id           VARCHAR(255) NOT NULL REFERENCES users(id),
+  rating_coding         SMALLINT CHECK (rating_coding BETWEEN 1 AND 5),
+  rating_explaining     SMALLINT CHECK (rating_explaining BETWEEN 1 AND 5),
+  rating_navigating     SMALLINT CHECK (rating_navigating BETWEEN 1 AND 5),
+  rating_followups      SMALLINT CHECK (rating_followups BETWEEN 1 AND 5),
+  rating_communication  SMALLINT CHECK (rating_communication BETWEEN 1 AND 5),
+  rating_problem_solving SMALLINT CHECK (rating_problem_solving BETWEEN 1 AND 5),
+  comments              TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(session_id, reviewer_id)
+);
+
 CREATE TABLE IF NOT EXISTS friend_invites (
   id              SERIAL PRIMARY KEY,
   session_id      INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

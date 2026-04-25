@@ -93,6 +93,19 @@ function parseSessionDateTime(date: string, time: string): Date {
   return new Date(year, month - 1, day, hour, min, 0);
 }
 
+// A session is expired when:
+//  - the backend explicitly set status = 'expired', OR
+//  - it's still in a live status (pending/matched/active) but 30 min past its scheduled time
+function isSessionExpired(s: Session, now: Date): boolean {
+  if (s.rawStatus === "expired") return true;
+  if (s.rawStatus === "completed" || s.rawStatus === "cancelled") return false;
+  if (s.rawStatus === "pending" || s.rawStatus === "matched" || s.rawStatus === "active") {
+    const deadline = parseSessionDateTime(s.scheduledDateRaw, s.scheduledTimeRaw).getTime() + 30 * 60 * 1000;
+    return now.getTime() > deadline;
+  }
+  return false;
+}
+
 
 function mapApiSession(s: ApiSession): Session {
   const statusMap: Record<string, SessionStatus> = {
@@ -166,15 +179,16 @@ export default function SchedulerClient() {
   };
 
   const filtered = sessions.filter(s => {
-    if (filterTab === "Upcoming")  return s.status === "Scheduled" && s.rawStatus !== "expired";
-    if (filterTab === "Completed") return s.status === "Completed" || s.rawStatus === "expired";
+    const expired = isSessionExpired(s, now);
+    if (filterTab === "Upcoming")  return s.status === "Scheduled" && !expired;
+    if (filterTab === "Completed") return s.status === "Completed" || expired;
     return true;
   });
 
   return (
     <div className="schedule-page">
       {/* Nav */}
-      <ScheduleNavbar />
+      <ScheduleNavbar activePath="/schedule" />
 
       <main className="schedule-container" id="main-content">
 
@@ -286,10 +300,7 @@ export default function SchedulerClient() {
                     </thead>
                     <tbody>
                       {filtered.map(s => {
-                        const isExpired = s.rawStatus === "expired" || (
-                          (s.rawStatus === "pending" || s.rawStatus === "matched") &&
-                          now > new Date(parseSessionDateTime(s.scheduledDateRaw, s.scheduledTimeRaw).getTime() + 30 * 60 * 1000)
-                        );
+                        const isExpired = isSessionExpired(s, now);
                         const canJoin  = (s.rawStatus === "matched" || s.rawStatus === "active") && !isExpired;
 
                         return (

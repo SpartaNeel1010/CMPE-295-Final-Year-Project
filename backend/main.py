@@ -6,6 +6,7 @@ from app.database import init_db
 from app.routers import auth
 from app.routers import sessions
 from app.routers import questions
+from app.routers import execute
 from app import ws
 
 
@@ -36,6 +37,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(sessions.router)
 app.include_router(questions.router)
+app.include_router(execute.router)
 app.include_router(ws.router)
 
 
