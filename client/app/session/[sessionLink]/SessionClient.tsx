@@ -558,6 +558,12 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
   // Partner left state
   const [partnerLeft,     setPartnerLeft]     = useState(false);
   const [partnerLeftAckd, setPartnerLeftAckd] = useState(false); // dismissed the initial banner
+  // AI feedback state
+  const [aiFeedbackState, setAiFeedbackState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [aiFeedbackData,  setAiFeedbackData]  = useState<Record<string, unknown> | null>(null);
+  const [aiFeedbackRound, setAiFeedbackRound] = useState<1 | 2>(1);
+  // Transcript accumulator: captures timestamped chat lines during each round
+  const transcriptRef = useRef<string[]>([]);
 
   // Ref to track whether we've already initialised code/language (runs once, after questions arrive)
   const codeInitialised = useRef(false);
@@ -661,6 +667,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
       try {
         const msg = JSON.parse(e.data) as {
           type: string; code: string; round: number; language?: string;
+          sender?: string; text?: string;
         };
         if (msg.type === "code_update") {
           setCodeByRound(prev => {
@@ -672,6 +679,11 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
             const lang = (Object.entries(LANG_KEY).find(([, v]) => v === msg.language)?.[0]) as Language | undefined;
             if (lang) setLanguage(lang);
           }
+        }
+        // Capture chat messages into the transcript
+        if (msg.type === "chat_message" && msg.sender && msg.text) {
+          const ts = new Date().toLocaleTimeString();
+          transcriptRef.current.push(`[${ts}] ${msg.sender}: ${msg.text}`);
         }
         // Partner pressed "Ready for Round 2"
         if (msg.type === "ready_round2") {
@@ -906,6 +918,30 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
   const allRated = FEEDBACK_CATEGORIES.every(c => !!feedbackRatings[c.key]);
 
+  // ── AI feedback trigger ────────────────────────────────────────────────────
+  const triggerAiFeedback = async (intervieweeRound: 1 | 2) => {
+    setAiFeedbackRound(intervieweeRound);
+    setAiFeedbackState("loading");
+    const transcript = transcriptRef.current.join("\n");
+    try {
+      const data = await authedRequest<{ feedback: Record<string, unknown> }>(
+        `/api/sessions/link/${sessionLink}/ai-feedback`,
+        getTokenRef.current,
+        {
+          method: "POST",
+          body: JSON.stringify({ round: intervieweeRound, transcript }),
+        },
+      );
+      setAiFeedbackData(data.feedback);
+      setAiFeedbackState("done");
+    } catch {
+      setAiFeedbackState("error");
+    }
+  };
+
+  // Which round was the current user interviewee? (host=R1, guest=R2)
+  const myIntervieweeRound: 1 | 2 = session ? (session.is_host ? 1 : 2) : 1;
+
   const handleFeedbackSubmit = async () => {
     if (!allRated) return;
     setFeedbackState("submitting");
@@ -919,6 +955,8 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
         },
       );
       setFeedbackState("done");
+      // Trigger AI feedback for the user's interviewee round
+      triggerAiFeedback(myIntervieweeRound);
     } catch {
       setFeedbackState("form");
       alert("Failed to submit feedback. Please try again.");
@@ -1623,19 +1661,55 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
                     {feedbackState === "already_done" ? "You've already submitted feedback" : "Thank you for your feedback!"}
                   </div>
                   <p style={{ fontSize: "0.82rem", color: "var(--muted)", maxWidth: 340, margin: "0 auto 1.5rem" }}>
-                    Your rating for <strong style={{ color: "var(--foreground)" }}>{theirName}</strong> has been recorded. You can view the feedback you received in the session detail page.
+                    Your rating for <strong style={{ color: "var(--foreground)" }}>{theirName}</strong> has been recorded.
+                    {aiFeedbackState === "idle" && " Click below to get your AI interview feedback."}
+                    {aiFeedbackState === "loading" && " Generating your AI feedback — this takes a few seconds…"}
+                    {aiFeedbackState === "done" && " Scroll down to view your AI-generated feedback."}
+                    {aiFeedbackState === "error" && " AI feedback unavailable right now."}
                   </p>
-                  <Link
-                    href="/schedule"
-                    style={{
-                      display: "inline-block",
-                      padding: "0.6rem 1.6rem", borderRadius: "8px",
-                      background: "var(--primary)", color: "white",
-                      fontSize: "0.85rem", fontWeight: 700, textDecoration: "none",
-                    }}
-                  >
-                    Back to Schedule
-                  </Link>
+                  {aiFeedbackState === "idle" && (
+                    <button
+                      onClick={() => triggerAiFeedback(myIntervieweeRound)}
+                      style={{
+                        padding: "0.6rem 1.6rem", borderRadius: "8px",
+                        background: "var(--primary)", color: "white",
+                        fontSize: "0.85rem", fontWeight: 700, border: "none", cursor: "pointer",
+                      }}
+                    >
+                      Get AI Feedback
+                    </button>
+                  )}
+                  {aiFeedbackState === "loading" && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.6rem", color: "var(--muted)", fontSize: "0.83rem" }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: "spin 0.8s linear infinite" }}>
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                      </svg>
+                      Analysing your performance…
+                    </div>
+                  )}
+                  {aiFeedbackState === "error" && (
+                    <div style={{ color: "#f87171", fontSize: "0.8rem", marginBottom: "1rem" }}>
+                      Could not generate AI feedback. You can try again later from your session history.
+                    </div>
+                  )}
+                  {aiFeedbackState !== "done" && (
+                    <div style={{ marginTop: "1.5rem" }}>
+                      <Link
+                        href="/schedule"
+                        style={{
+                          display: "inline-block",
+                          padding: "0.6rem 1.6rem", borderRadius: "8px",
+                          background: aiFeedbackState === "loading" ? "var(--border)" : "var(--card)",
+                          border: "1px solid var(--border)",
+                          color: aiFeedbackState === "loading" ? "var(--muted)" : "var(--foreground)",
+                          fontSize: "0.85rem", fontWeight: 600, textDecoration: "none",
+                          pointerEvents: aiFeedbackState === "loading" ? "none" : "auto",
+                        }}
+                      >
+                        Back to Schedule
+                      </Link>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1711,9 +1785,16 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
                 </span>
                 <div style={{ display: "flex", gap: "0.6rem" }}>
                   {!partnerLeft && (
-                    <Link href="/schedule" style={{ padding: "0.45rem 1rem", borderRadius: "7px", border: "1px solid var(--border)", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600, textDecoration: "none" }}>
+                    <button
+                      onClick={() => {
+                        // Trigger AI feedback in background, then navigate
+                        triggerAiFeedback(myIntervieweeRound);
+                        setFeedbackState("done");
+                      }}
+                      style={{ padding: "0.45rem 1rem", borderRadius: "7px", border: "1px solid var(--border)", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600, background: "transparent", cursor: "pointer" }}
+                    >
                       Skip
-                    </Link>
+                    </button>
                   )}
                   <button
                     onClick={handleFeedbackSubmit}
@@ -1735,6 +1816,216 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
           </div>
         </div>
       )}
+
+      {/* ── AI Feedback Overlay ── */}
+      {aiFeedbackState === "done" && aiFeedbackData && (() => {
+        type Fb = Record<string, unknown>;
+        const fb = aiFeedbackData as Fb;
+        const score = fb.overall_score as number;
+        const categories = [
+          { key: "code_quality",    label: "Code Quality",      icon: "⌨️" },
+          { key: "problem_solving", label: "Problem Solving",   icon: "🧩" },
+          { key: "communication",   label: "Communication",     icon: "💬" },
+        ] as const;
+        const scoreColor = score >= 8 ? "#4ade80" : score >= 6 ? "#fbbf24" : "#f87171";
+        const scoreBg    = score >= 8 ? "#0d2b1e" : score >= 6 ? "#1c1500" : "#2d0e0e";
+
+        return (
+          <div style={{
+            position: "fixed", inset: 0, zIndex: 150,
+            background: "rgba(5,6,10,0.96)", backdropFilter: "blur(12px)",
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            overflowY: "auto", padding: "2rem 1rem",
+          }}>
+            <div style={{ width: "100%", maxWidth: 700, display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+
+              {/* Header card */}
+              <div style={{
+                background: "linear-gradient(135deg, #0d0f1a 0%, #13111f 50%, #0d1520 100%)",
+                border: "1px solid #2d2a4a",
+                borderRadius: "18px", padding: "2rem",
+                position: "relative", overflow: "hidden",
+              }}>
+                {/* Glow */}
+                <div style={{
+                  position: "absolute", top: -40, right: -40, width: 220, height: 220,
+                  borderRadius: "50%",
+                  background: `radial-gradient(circle, ${scoreColor}18 0%, transparent 70%)`,
+                  pointerEvents: "none",
+                }} />
+                <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "1.25rem" }}>
+                  <div style={{ width: 28, height: 28, background: "var(--primary)", borderRadius: "7px", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: "0.7rem", fontWeight: 800 }}>IR</div>
+                  <span style={{ fontSize: "0.7rem", fontWeight: 700, color: "var(--muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>AI Interview Feedback · Round {aiFeedbackRound}</span>
+                </div>
+                <h2 style={{ fontSize: "1.5rem", fontWeight: 900, color: "var(--foreground)", letterSpacing: "-0.03em", margin: "0 0 0.5rem" }}>
+                  Your Performance Report
+                </h2>
+                <p style={{ fontSize: "0.85rem", color: "var(--muted)", margin: "0 0 1.5rem", maxWidth: 500, lineHeight: 1.65 }}>
+                  {fb.summary as string}
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: "0.75rem",
+                    background: scoreBg, border: `1px solid ${scoreColor}44`,
+                    borderRadius: "12px", padding: "0.75rem 1.25rem",
+                  }}>
+                    <span style={{ fontSize: "2rem", fontWeight: 900, color: scoreColor, fontFamily: "monospace" }}>{score}</span>
+                    <div>
+                      <div style={{ fontSize: "0.65rem", color: "var(--muted)", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>Overall Score</div>
+                      <div style={{ fontSize: "0.72rem", color: scoreColor, fontWeight: 600 }}>out of 10</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                    {categories.map(cat => {
+                      const catData = fb[cat.key] as Fb;
+                      const s = catData?.score as number;
+                      const c2 = s >= 8 ? "#4ade80" : s >= 6 ? "#fbbf24" : "#f87171";
+                      return (
+                        <div key={cat.key} style={{
+                          background: "var(--card)", border: "1px solid var(--border)",
+                          borderRadius: "8px", padding: "0.5rem 0.75rem",
+                          display: "flex", flexDirection: "column", alignItems: "center",
+                        }}>
+                          <span style={{ fontSize: "0.88rem" }}>{cat.icon}</span>
+                          <span style={{ fontSize: "1rem", fontWeight: 800, color: c2, fontFamily: "monospace" }}>{s}</span>
+                          <span style={{ fontSize: "0.6rem", color: "var(--muted)", fontWeight: 600, letterSpacing: "0.04em" }}>{cat.label.split(" ")[0].toUpperCase()}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Strengths + Improvements */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div style={{ background: "#0a1f12", border: "1px solid #166534", borderRadius: "14px", padding: "1.25rem" }}>
+                  <div style={{ fontSize: "0.72rem", fontWeight: 800, color: "#4ade80", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: "0.75rem" }}>✦ Strengths</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {(fb.strengths as string[]).map((s, i) => (
+                      <div key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8rem", color: "#86efac", lineHeight: 1.5 }}>
+                        <span style={{ color: "#4ade80", flexShrink: 0, marginTop: "0.1rem" }}>✓</span>
+                        <span>{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ background: "#1c0f00", border: "1px solid #78350f", borderRadius: "14px", padding: "1.25rem" }}>
+                  <div style={{ fontSize: "0.72rem", fontWeight: 800, color: "#fbbf24", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: "0.75rem" }}>▲ Areas to Improve</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {(fb.areas_for_improvement as string[]).map((s, i) => (
+                      <div key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8rem", color: "#fde68a", lineHeight: 1.5 }}>
+                        <span style={{ color: "#f59e0b", flexShrink: 0, marginTop: "0.1rem" }}>→</span>
+                        <span>{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Category breakdowns */}
+              {categories.map(cat => {
+                const catData = fb[cat.key] as Fb;
+                if (!catData) return null;
+                const s = catData.score as number;
+                const c2 = s >= 8 ? "#4ade80" : s >= 6 ? "#fbbf24" : "#f87171";
+                const bg2 = s >= 8 ? "#0d2b1e" : s >= 6 ? "#1c1500" : "#2d0e0e";
+                const bd2 = s >= 8 ? "#166534" : s >= 6 ? "#78350f" : "#7f1d1d";
+                return (
+                  <div key={cat.key} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "1.25rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <span style={{ fontSize: "1.1rem" }}>{cat.icon}</span>
+                        <span style={{ fontSize: "0.9rem", fontWeight: 800, color: "var(--foreground)" }}>{cat.label}</span>
+                      </div>
+                      <div style={{ background: bg2, border: `1px solid ${bd2}`, borderRadius: "8px", padding: "2px 10px", fontSize: "0.82rem", fontWeight: 800, color: c2 }}>
+                        {s} / 10
+                      </div>
+                    </div>
+                    {/* Score bar */}
+                    <div style={{ height: 6, background: "var(--border)", borderRadius: "999px", marginBottom: "0.85rem", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(s / 10) * 100}%`, background: c2, borderRadius: "999px", transition: "width 1s ease" }} />
+                    </div>
+                    <p style={{ fontSize: "0.82rem", color: "var(--muted)", lineHeight: 1.65, margin: 0 }}>{catData.feedback as string}</p>
+                  </div>
+                );
+              })}
+
+              {/* Time Complexity */}
+              {fb.time_complexity && (() => {
+                const tc = fb.time_complexity as Fb;
+                return (
+                  <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "1.25rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                      <span style={{ fontSize: "1.1rem" }}>⏱</span>
+                      <span style={{ fontSize: "0.9rem", fontWeight: 800, color: "var(--foreground)" }}>Time Complexity Analysis</span>
+                      <span style={{ marginLeft: "auto", fontSize: "0.72rem", fontWeight: 700, padding: "2px 8px", borderRadius: "999px",
+                        background: tc.identified ? "#0d2b1e" : "#2d0e0e",
+                        color: tc.identified ? "#4ade80" : "#f87171",
+                        border: `1px solid ${tc.identified ? "#166534" : "#7f1d1d"}`,
+                      }}>
+                        {tc.identified ? "Identified ✓" : "Not Identified ✗"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: "1rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+                      <div style={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "8px", padding: "0.5rem 0.85rem" }}>
+                        <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>Your Answer</div>
+                        <code style={{ fontSize: "0.82rem", color: "var(--accent)", fontFamily: "monospace" }}>{tc.candidate_answer as string}</code>
+                      </div>
+                      <div style={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "8px", padding: "0.5rem 0.85rem" }}>
+                        <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>Correct Answer</div>
+                        <code style={{ fontSize: "0.82rem", color: "#4ade80", fontFamily: "monospace" }}>{tc.correct_answer as string}</code>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: "0.82rem", color: "var(--muted)", lineHeight: 1.65, margin: 0 }}>{tc.feedback as string}</p>
+                  </div>
+                );
+              })()}
+
+              {/* Study Topics */}
+              <div style={{ background: "#0d0f1e", border: "1px solid #2d2a4a", borderRadius: "14px", padding: "1.25rem" }}>
+                <div style={{ fontSize: "0.72rem", fontWeight: 800, color: "#a78bfa", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: "0.75rem" }}>📚 Recommended Study Topics</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                  {(fb.suggested_study_topics as string[]).map((t, i) => (
+                    <span key={i} style={{
+                      background: "#1e1a2e", border: "1px solid #4c1d95",
+                      color: "#c4b5fd", fontSize: "0.78rem", fontWeight: 600,
+                      padding: "4px 12px", borderRadius: "999px",
+                    }}>{t}</span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Interviewer Tips */}
+              {fb.interviewer_tips && (
+                <div style={{ background: "#0a0f1a", border: "1px solid #1e3a5f", borderRadius: "14px", padding: "1.25rem", display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "1.3rem", flexShrink: 0 }}>💡</span>
+                  <div>
+                    <div style={{ fontSize: "0.72rem", fontWeight: 800, color: "#38bdf8", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: "0.35rem" }}>Pro Tip for Next Interview</div>
+                    <p style={{ fontSize: "0.84rem", color: "#bae6fd", lineHeight: 1.65, margin: 0 }}>{fb.interviewer_tips as string}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Footer CTA */}
+              <div style={{ display: "flex", justifyContent: "center", paddingBottom: "1rem" }}>
+                <Link
+                  href="/schedule"
+                  style={{
+                    display: "inline-block",
+                    padding: "0.7rem 2.5rem", borderRadius: "10px",
+                    background: "var(--primary)", color: "white",
+                    fontSize: "0.9rem", fontWeight: 700, textDecoration: "none",
+                    boxShadow: "0 0 24px var(--primary)40",
+                  }}
+                >
+                  Back to Schedule
+                </Link>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
