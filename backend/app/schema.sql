@@ -77,3 +77,15 @@ CREATE TABLE IF NOT EXISTS friend_invites (
                     CHECK (status IN ('pending', 'accepted', 'expired')),
   created_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- AI-generated feedback per participant per round (safe to re-run)
+CREATE TABLE IF NOT EXISTS ai_feedback (
+  id            SERIAL PRIMARY KEY,
+  session_id    INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id       VARCHAR(255) NOT NULL REFERENCES users(id),
+  round         SMALLINT NOT NULL CHECK (round IN (1, 2)),
+  feedback_json TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(session_id, user_id, round)
+);

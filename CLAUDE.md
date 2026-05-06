@@ -67,6 +67,7 @@ JWT_SECRET=<32+ char random string>
 PORT=4000
 CLIENT_ORIGIN=http://localhost:3000
 CLERK_SECRET_KEY=<from Clerk dashboard>
+OPENAI_API_KEY=<from https://platform.openai.com/api-keys>
 ```
 
 **Frontend** (`.env.local`):
@@ -80,6 +81,23 @@ NEXT_PUBLIC_API_URL=http://localhost:4000
 - Only one API endpoint exists: `GET /api/auth/me`
 - Schedule page uses hardcoded `SAMPLE_SESSIONS` — no real backend integration yet
 - Database only has a `users` table; sessions/scheduling tables are not yet created
+
+## AI Feedback System
+
+- After each session, the **interviewee** receives AI-generated feedback via GPT-4o
+- Triggered automatically after manual feedback submit OR skip
+- Backend: `POST /api/sessions/link/{session_link}/ai-feedback`
+  - Sends the question, submitted code, and conversation transcript to OpenAI GPT-4o
+  - Uses `response_format: json_object` for guaranteed valid JSON output
+  - Caches results in the `ai_feedback` PostgreSQL table
+- Frontend: premium overlay in `SessionClient.tsx` shows:
+  - Overall score + category mini-scores (code quality, problem solving, communication)
+  - Strengths and areas for improvement
+  - Time complexity analysis
+  - Recommended study topics
+  - Pro tip for next interview
+- Role mapping: `host = interviewee in round 1`, `guest = interviewee in round 2`
+- Transcript capture: WS `chat_message` events are accumulated in `transcriptRef`
 
 
 ## Commands to start run client in https
