@@ -1,7 +1,16 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Try to load from the Cloud Run secret mount first
+if os.path.exists("/secrets/.env"):
+    load_dotenv("/secrets/.env")
+# Fallback to local secrets/.env if it exists
+elif os.path.exists("secrets/.env"):
+    load_dotenv("secrets/.env")
+# Fallback to standard local .env
+else:
+    load_dotenv()
+
 
 DATABASE_URL: str = os.environ["DATABASE_URL"]
 JWT_SECRET: str = os.environ.get("JWT_SECRET", "change_me")
