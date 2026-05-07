@@ -1819,8 +1819,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
       {/* ── AI Feedback Overlay ── */}
       {aiFeedbackState === "done" && aiFeedbackData && (() => {
-        type Fb = Record<string, unknown>;
-        const fb = aiFeedbackData as Fb;
+        const fb = aiFeedbackData as any;
         const score = fb.overall_score as number;
         const categories = [
           { key: "code_quality",    label: "Code Quality",      icon: "⌨️" },
@@ -1877,7 +1876,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
                   </div>
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     {categories.map(cat => {
-                      const catData = fb[cat.key] as Fb;
+                      const catData = fb[cat.key] as any;
                       const s = catData?.score as number;
                       const c2 = s >= 8 ? "#4ade80" : s >= 6 ? "#fbbf24" : "#f87171";
                       return (
@@ -1924,7 +1923,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
               {/* Category breakdowns */}
               {categories.map(cat => {
-                const catData = fb[cat.key] as Fb;
+                const catData = fb[cat.key] as any;
                 if (!catData) return null;
                 const s = catData.score as number;
                 const c2 = s >= 8 ? "#4ade80" : s >= 6 ? "#fbbf24" : "#f87171";
@@ -1952,7 +1951,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
               {/* Time Complexity */}
               {fb.time_complexity && (() => {
-                const tc = fb.time_complexity as Fb;
+                const tc = fb.time_complexity as any;
                 return (
                   <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "1.25rem" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
