@@ -205,9 +205,9 @@ func twoSum(nums []int, target int) []int {
 // ── Video tile ────────────────────────────────────────────────────────────────
 
 const TILE_STYLE: React.CSSProperties = {
-  flex: 1, position: "relative", background: "#0c0e15",
+  position: "relative", background: "#0c0e15",
   border: "1px solid var(--border)", borderRadius: "12px", overflow: "hidden",
-  minHeight: 0,
+  minHeight: 0, aspectRatio: "16 / 9", height: "100%",
 };
 
 const NAME_LABEL_STYLE: React.CSSProperties = {
@@ -367,6 +367,7 @@ function VideoConferenceRow({
     flexShrink: 0, height: 154, display: "flex", gap: "0.75rem",
     padding: "0.6rem 0.75rem", borderBottom: "1px solid var(--border)",
     background: "#0a0c11",
+    justifyContent: "center",
   };
 
   // Fallback: show avatar tiles if LiveKit is not configured or token failed
