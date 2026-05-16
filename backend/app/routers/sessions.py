@@ -25,14 +25,21 @@ BEHAVIORAL_SLOTS = [
     "3:00 PM", "4:30 PM", "6:00 PM", "7:30 PM", "9:00 PM",
 ]
 
-def _parse_session_dt(scheduled_date, scheduled_time_str: str) -> datetime:
+def _parse_session_dt(scheduled_date, scheduled_time_str: str, tz_name: str = "UTC") -> datetime:
     """Combine a date (object or 'YYYY-MM-DD' str) with a '9:00 AM' time string."""
     if isinstance(scheduled_date, str):
         d = datetime.strptime(scheduled_date, "%Y-%m-%d").date()
     else:
         d = scheduled_date
     t = datetime.strptime(scheduled_time_str.strip(), "%I:%M %p").time()
-    return datetime.combine(d, t)
+    dt = datetime.combine(d, t)
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        from datetime import timezone as dt_timezone
+        tz = dt_timezone.utc
+    return dt.replace(tzinfo=tz)
 
 
 SLOTS_BY_TRACK: dict[str, list[str]] = {
@@ -127,6 +134,8 @@ async def create_peer_session(
         fetch="one",
     )
 
+    user_tz = request.headers.get("x-timezone", "America/Los_Angeles")
+
     if match:
         session = execute(
             """UPDATE sessions
@@ -140,10 +149,10 @@ async def create_peer_session(
     else:
         session = execute(
             """INSERT INTO sessions
-                 (host_user_id, track, mode, difficulty, scheduled_date, scheduled_time)
-               VALUES (%s, %s, 'peer', %s, %s, %s)
+                 (host_user_id, track, mode, difficulty, scheduled_date, scheduled_time, timezone)
+               VALUES (%s, %s, 'peer', %s, %s, %s, %s)
                RETURNING *""",
-            (user_id, body.track, body.difficulty, body.date, body.time),
+            (user_id, body.track, body.difficulty, body.date, body.time, user_tz),
             fetch="one",
         )
         return {"session": dict(session), "status": "pending"}
@@ -225,12 +234,13 @@ async def create_friend_session(
     if body.track not in ("dsa", "behavioral"):
         raise HTTPException(status_code=400, detail="Invalid track")
 
+    user_tz = request.headers.get("x-timezone", "America/Los_Angeles")
     session = execute(
         """INSERT INTO sessions
-             (host_user_id, track, mode, scheduled_date, scheduled_time, status)
-           VALUES (%s, %s, 'friend', CURRENT_DATE, '12:00 PM', 'pending')
+             (host_user_id, track, mode, scheduled_date, scheduled_time, status, timezone)
+           VALUES (%s, %s, 'friend', CURRENT_DATE, '12:00 PM', 'pending', %s)
            RETURNING *""",
-        (user_id, body.track),
+        (user_id, body.track, user_tz),
         fetch="one",
     )
 
@@ -937,16 +947,19 @@ async def list_sessions(
 
     # Auto-expire sessions whose scheduled time has passed (30-min grace window)
     overdue = execute(
-        """SELECT id, scheduled_date, scheduled_time FROM sessions
+        """SELECT id, scheduled_date, scheduled_time, timezone FROM sessions
            WHERE (host_user_id = %s OR guest_user_id = %s)
-             AND status IN ('pending', 'matched', 'active')""",
+             AND status IN ('pending', 'matched', 'active')
+             AND mode != 'friend'""",
         (user_id, user_id),
         fetch="all",
     )
-    now_dt = datetime.now()
+    from datetime import timezone as dt_timezone
+    now_dt = datetime.now(dt_timezone.utc)
     for s in (overdue or []):
         try:
-            sdt = _parse_session_dt(s["scheduled_date"], s["scheduled_time"])
+            tz_name = s.get("timezone") or "America/Los_Angeles"
+            sdt = _parse_session_dt(s["scheduled_date"], s["scheduled_time"], tz_name)
             if now_dt > sdt + timedelta(minutes=30):
                 execute("UPDATE sessions SET status = 'expired' WHERE id = %s", (s["id"],))
         except Exception:

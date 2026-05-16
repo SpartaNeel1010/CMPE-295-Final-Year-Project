@@ -1,7 +1,7 @@
 declare const process: { env: Record<string, string | undefined> };
 const BASE_URL: string =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL) ||
-  "https://10.0.0.226:4000";
+  "https://10.250.165.65:4000";
 
 export type ApiError = {
   detail: string;
@@ -50,6 +50,7 @@ export async function authedRequest<T>(
     ...options,
     headers: {
       ...(options.headers ?? {}),
+      "X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
