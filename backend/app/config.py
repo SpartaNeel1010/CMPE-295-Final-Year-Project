@@ -17,7 +17,7 @@ JWT_SECRET: str = os.environ.get("JWT_SECRET", "change_me")
 JWT_ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 PORT: int = int(os.environ.get("PORT", 4000))
-CLIENT_ORIGIN: str = os.environ.get("CLIENT_ORIGIN", "https://10.0.0.226:3000")
+CLIENT_ORIGIN: str = os.environ.get("CLIENT_ORIGIN", "https://10.250.165.65:3000")
 
 # ── Email (SMTP) ───────────────────────────────────────────────────────────────
 SMTP_HOST: str     = os.environ.get("SMTP_HOST", "smtp.gmail.com")

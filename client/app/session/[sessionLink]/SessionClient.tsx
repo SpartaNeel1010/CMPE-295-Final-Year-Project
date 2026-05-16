@@ -659,7 +659,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
 
   // WebSocket — real-time code sync between participants
   useEffect(() => {
-    const base = (process.env.NEXT_PUBLIC_API_URL || "https://10.0.0.226:4000")
+    const base = (process.env.NEXT_PUBLIC_API_URL || "https://10.250.165.65:4000")
       .replace(/^http/, "ws");
     const ws = new WebSocket(`${base}/ws/session/${sessionLink}`);
     wsRef.current = ws;
@@ -669,6 +669,7 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
         const msg = JSON.parse(e.data) as {
           type: string; code: string; round: number; language?: string;
           sender?: string; text?: string;
+          results?: TestResult[]; isSubmit?: boolean; stderr?: string;
         };
         if (msg.type === "code_update") {
           setCodeByRound(prev => {
@@ -679,6 +680,19 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
           if (msg.language) {
             const lang = (Object.entries(LANG_KEY).find(([, v]) => v === msg.language)?.[0]) as Language | undefined;
             if (lang) setLanguage(lang);
+          }
+        }
+        if (msg.type === "execution_result") {
+          if (msg.results) setTestResults(msg.results);
+          if (msg.isSubmit !== undefined) setIsSubmitRun(msg.isSubmit);
+          setLastRun("just now");
+          setActiveTab("Test Cases");
+          if (msg.isSubmit && msg.round !== undefined) {
+             setSubmittedRounds(prev => {
+                const next: [boolean, boolean] = [prev[0], prev[1]];
+                next[msg.round - 1] = true;
+                return next;
+             });
           }
         }
         // Capture chat messages into the transcript
@@ -867,6 +881,13 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
       );
       setTestResults(data.results ?? []);
       setLastRun("just now");
+      wsRef.current?.send(JSON.stringify({
+        type: "execution_result",
+        round,
+        results: data.results ?? [],
+        stderr: data.stderr,
+        isSubmit: false,
+      }));
     } catch {
       setTestResults([]);
     } finally {
@@ -901,6 +922,13 @@ export default function SessionClient({ sessionLink }: SessionClientProps) {
         return next;
       });
       setLastRun("just now");
+      wsRef.current?.send(JSON.stringify({
+        type: "execution_result",
+        round,
+        results: data.results ?? [],
+        stderr: data.stderr,
+        isSubmit: true,
+      }));
     } catch {
       setTestResults([]);
     } finally {
